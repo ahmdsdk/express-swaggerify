@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2024-10-08
+
+### Fixed
+- ✅ Added missing middleware files (auth.ts, validation.ts) to example app
+- ✅ Added missing schema files (authSchemas.ts) to example app
+- ✅ Created comprehensive example README with usage instructions
+
+### Changed
+- 📝 Updated main README with important notes about supported patterns
+- 📝 Added limitations and best practices section
+- 📝 Clarified what route patterns work vs. don't work
+
 ## [1.0.0] - 2024-10-08
 
 ### Added
