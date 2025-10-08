@@ -1,0 +1,42 @@
+# Source files
+src/
+tests/
+examples/
+
+# Documentation
+docs/
+*.md
+!README.md
+!LICENSE
+
+# Build files
+tsconfig.json
+.eslintrc.*
+.prettierrc
+.prettierignore
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Misc
+node_modules/
+yarn.lock
+package-lock.json
+.DS_Store
+.env
+.env.local
+
+# Project specific
+CHANGELOG.md
+CONTRIBUTING.md
+GETTING_STARTED.md
+PROJECT_SUMMARY.md
+START_HERE.md
+
