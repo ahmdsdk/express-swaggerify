@@ -42,9 +42,10 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
 
     try {
       const routeContent = await fs.readFile(routePath, 'utf-8');
-      
+
       // Get the correct base path for this route file
       const routeBasePath = routerMounts.get(fileName) || basePath;
+      console.log(`  🎯 Using base path: ${routeBasePath} for ${fileName}`);
       const routes = extractRoutes(routeContent, routeBasePath);
 
       if (routes.length === 0) {
@@ -94,10 +95,10 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
 
 async function parseRouterMounts(routesDir: string, basePath: string): Promise<Map<string, string>> {
   const routerMounts = new Map<string, string>();
-  
+
   // Look for index.ts in the routes directory
   const indexPath = path.join(process.cwd(), routesDir, 'index.ts');
-  
+
   if (!await fs.pathExists(indexPath)) {
     console.log('⚠️  No index.ts found in routes directory, using default base path');
     return routerMounts;
@@ -105,39 +106,47 @@ async function parseRouterMounts(routesDir: string, basePath: string): Promise<M
 
   try {
     const indexContent = await fs.readFile(indexPath, 'utf-8');
-    
+
+    console.log('📄 Index file content preview:');
+    console.log(indexContent.split('\n').slice(10, 20).join('\n'));
+
     // Parse router.use() statements to understand mounting structure
     const routerUseRegex = /router\.use\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*(\w+)Routes\s*\)/g;
     let match;
-    
+
+    console.log('🔍 Looking for router.use() patterns...');
+
     while ((match = routerUseRegex.exec(indexContent)) !== null) {
       const mountPath = match[1]; // e.g., '/auth', '/users'
-      const routeName = match[2]; // e.g., 'auth', 'users'
-      
+      const routeVariable = match[2]; // e.g., 'auth', 'user' (from authRoutes, userRoutes)
+
       // Combine base path with mount path
       const fullPath = `${basePath}${mountPath}`;
-      
-      // Map route file name to its full base path
+
+      // Extract the route name from the mount path (remove leading slash)
+      const routeName = mountPath.substring(1); // e.g., 'auth', 'users'
+
+      // Map the route name to its full base path
       routerMounts.set(routeName, fullPath);
-      
-      console.log(`🔗 Found router mount: ${routeName} → ${fullPath}`);
+
+      console.log(`🔗 Found router mount: ${routeName} → ${fullPath} (from ${routeVariable}Routes)`);
     }
-    
+
     // If no router mounts found, add default mappings for common patterns
     if (routerMounts.size === 0) {
       console.log('⚠️  No router mounts found, using default patterns');
-      
+
       // Common route file patterns
       const commonRoutes = ['auth', 'users', 'payments', 'transactions', 'health', 'docs', 'test'];
       commonRoutes.forEach(routeName => {
         routerMounts.set(routeName, `${basePath}/${routeName}`);
       });
     }
-    
+
   } catch (error) {
     console.log('⚠️  Error parsing router mounts:', (error as Error).message);
   }
-  
+
   return routerMounts;
 }
 
