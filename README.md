@@ -274,6 +274,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 - ✅ Numeric fields: `amount`, `price` → `number`
 - ✅ Boolean fields: `isActive`, `hasPermission` → `boolean`
 
+## ⚠️ Important Notes
+
+### What Works
+Express Swaggerify works best with **static route definitions** that follow standard Express.js patterns. It analyzes your TypeScript/JavaScript files using AST parsing to extract route information.
+
+### Current Limitations
+- ❌ **Dynamic route registration** (routes registered in loops or from configuration)
+- ❌ **Routes without clear controller references** (inline handlers with complex logic)
+- ❌ **Heavily obfuscated or minified code**
+
+### Best Practices
+1. Keep route definitions in dedicated route files
+2. Use named controller methods (not inline anonymous functions)
+3. Use destructuring for request body fields: `const { email } = req.body`
+4. Follow consistent naming conventions
+
+For detailed examples, see the [examples/basic-express-app](examples/basic-express-app) directory.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
