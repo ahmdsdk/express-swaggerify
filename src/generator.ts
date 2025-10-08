@@ -185,10 +185,10 @@ export function generateSwaggerEndpoint(
 
   statusCodes.sort().forEach(code => {
     let description = 'Success';
-    let schema = 'schemas.ApiResponse';
+    let schemaType = 'ApiResponse';
 
     if (code >= 400) {
-      schema = 'schemas.ErrorResponse';
+      schemaType = 'ErrorResponse';
       if (code === 400) description = 'Bad request';
       else if (code === 401) description = 'Unauthorized';
       else if (code === 403) description = 'Forbidden';
@@ -206,7 +206,7 @@ export function generateSwaggerEndpoint(
     endpoint += `        description: '${description}',\n`;
     endpoint += `        content: {\n`;
     endpoint += `          'application/json': {\n`;
-    endpoint += `            schema: ${schema},\n`;
+    endpoint += `            schema: { $ref: '#/components/schemas/${schemaType}' },\n`;
     endpoint += `          },\n`;
     endpoint += `        },\n`;
     endpoint += `      },\n`;
