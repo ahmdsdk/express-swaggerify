@@ -43,8 +43,13 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
     try {
       const routeContent = await fs.readFile(routePath, 'utf-8');
 
+      // Convert camelCase fileName to kebab-case for route matching
+      // e.g., spatialRooms -> spatial-rooms
+      const kebabFileName = fileName.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+
       // Get the correct base path for this route file
-      const routeBasePath = routerMounts.get(fileName) || basePath;
+      // Try both the original fileName and the kebab-case version
+      const routeBasePath = routerMounts.get(fileName) || routerMounts.get(kebabFileName) || basePath;
       console.log(`  🎯 Using base path: ${routeBasePath} for ${fileName}`);
       const routes = extractRoutes(routeContent, routeBasePath);
 
