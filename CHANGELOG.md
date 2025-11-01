@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - MIT License
 
+## [1.1.1] - 2025-11-01
+
+### Fixed
+- 🐛 Prevent smart defaults from being applied when a validator is specified but extraction fails
+- ✅ Avoid adding incorrect fields when Joi schema extraction is attempted but unsuccessful
+
 ## [1.1.0] - 2025-11-01
 
 ### Added

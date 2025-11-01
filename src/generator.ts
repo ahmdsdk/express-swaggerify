@@ -125,7 +125,10 @@ export async function generateSwaggerEndpoint(
       }).join('\n');
       endpoint += `          schema: ${indentedSchema},\n`;
     } else {
-      // Fallback to controller inference and smart defaults
+      // If a validator was specified but extraction failed, don't use smart defaults
+      const hasValidator = !!route.validatorSchema;
+      
+      // Fallback to controller inference and smart defaults (only if no validator was specified)
       endpoint += `          schema: {\n`;
       endpoint += `            type: 'object',\n`;
 
@@ -169,8 +172,9 @@ export async function generateSwaggerEndpoint(
         });
       }
 
-      // Add smart defaults for missing fields if enabled
-      if (options.smartDefaults !== false) {
+      // Add smart defaults for missing fields if enabled AND no validator was specified
+      // If validator was specified but extraction failed, we don't want to add incorrect defaults
+      if (options.smartDefaults !== false && !hasValidator) {
         const smartFields = generateSmartDefaults(route);
         smartFields.forEach(field => {
           if (!fieldMap.has(field.name)) {
