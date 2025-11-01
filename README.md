@@ -8,6 +8,7 @@
 ## ✨ Features
 
 - 🔍 **Smart Route Detection** - Parses both single-line and multi-line Express.js route definitions
+- 🎯 **Joi Schema Extraction** - Automatically extracts request body schemas from Joi validators (`validate(authSchemas.register)`)
 - 🧠 **Intelligent Field Inference** - Analyzes controller code to extract request body fields and types
 - 📝 **Auto-Generated Summaries** - Creates meaningful endpoint summaries from route paths and methods
 - 🏷️ **Organized by Tags** - Groups endpoints by route file for better organization
@@ -34,7 +35,7 @@ yarn add express-swaggerify
 npx swaggerify generate
 
 # With custom options
-npx swaggerify generate --routes-dir ./api/routes --output ./docs/swagger.ts
+npx swaggerify generate --routes-dir ./api/routes --output ./docs/swagger.ts --validators-dir ./src/api/v1/validators
 
 # Validate routes without generating docs
 npx swaggerify validate
@@ -94,14 +95,22 @@ router.post(
 );
 ```
 
-### 2. Controller Analysis
+### 2. Joi Schema Extraction (NEW!)
+
+Automatically extracts request body schemas from Joi validators:
+- Detects `validate(authSchemas.register)` middleware calls
+- Loads and converts Joi schemas to OpenAPI JSON Schema format
+- Extracts all validation rules (required, min/max length, patterns, etc.)
+- Provides accurate request body documentation from your validation schemas
+
+### 3. Controller Analysis
 
 Analyzes controller methods to extract:
 - Request body fields from destructuring: `const { email, password } = req.body`
 - HTTP status codes from responses: `res.status(400).json(...)`
 - Field types based on usage patterns
 
-### 3. Smart Field Generation
+### 4. Smart Field Generation
 
 Generates intelligent defaults based on route patterns:
 
@@ -111,7 +120,7 @@ Generates intelligent defaults based on route patterns:
 // /api/v1/users → email, username, firstName, lastName fields
 ```
 
-### 4. OpenAPI 3.0 Generation
+### 5. OpenAPI 3.0 Generation
 
 Creates proper OpenAPI 3.0 specification with:
 - Correct `content.application/json` structure
@@ -134,6 +143,7 @@ interface SwaggerifyOptions {
     url: string;
     description: string;
   }>;
+  validatorsDir?: string;        // './src/api/v1/validators' - Directory where Joi validators are located
   customSchemas?: Record<string, any>;
   smartDefaults?: boolean;      // true
   fieldTypeInference?: boolean; // true

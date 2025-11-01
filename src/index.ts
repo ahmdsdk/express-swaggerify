@@ -51,7 +51,7 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
       // Try both the original fileName and the kebab-case version
       const routeBasePath = routerMounts.get(fileName) || routerMounts.get(kebabFileName) || basePath;
       console.log(`  🎯 Using base path: ${routeBasePath} for ${fileName}`);
-      const routes = extractRoutes(routeContent, routeBasePath);
+      const routes = extractRoutes(routeContent, routeBasePath, routePath, options.validatorsDir);
 
       if (routes.length === 0) {
         console.log(`  ⚠️  No routes found`);
@@ -75,7 +75,8 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
           controllerInfo = analyzeControllerMethod(controllerContent, route.controllerMethod);
         }
 
-        endpoints.push(generateSwaggerEndpoint(route, controllerInfo, fileName, options));
+        const endpointStr = await generateSwaggerEndpoint(route, controllerInfo, fileName, options, routePath);
+        endpoints.push(endpointStr);
       }
 
       console.log(`  ✅ Generated ${endpoints.length} endpoints`);

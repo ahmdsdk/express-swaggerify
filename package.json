@@ -1,6 +1,6 @@
 {
   "name": "express-swaggerify",
-  "version": "1.0.7",
+  "version": "1.1.0",
   "description": "Auto-generate OpenAPI 3.0 documentation from Express.js routes with intelligent field detection",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -43,7 +43,9 @@
   "dependencies": {
     "commander": "^11.1.0",
     "fs-extra": "^11.1.1",
-    "glob": "^10.3.10"
+    "glob": "^10.3.10",
+    "joi-to-json-schema": "^5.1.0",
+    "ts-node": "^10.9.1"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",

@@ -1,11 +1,13 @@
 import { RouteInfo, ControllerInfo, SimpleEndpointConfig, SmartField, SwaggerifyOptions } from './types';
+import { loadJoiSchemaFromValidator } from './joiExtractor';
 
-export function generateSwaggerEndpoint(
+export async function generateSwaggerEndpoint(
   route: RouteInfo,
   controllerInfo?: ControllerInfo,
   routeFileName?: string,
-  options: SwaggerifyOptions = {}
-): string {
+  options: SwaggerifyOptions = {},
+  routeFilePath?: string
+): Promise<string> {
   const methodLower = route.method.toLowerCase();
   const pathSegments = route.path.split('/').filter(Boolean);
   const operationId = route.controllerMethod;
@@ -102,79 +104,103 @@ export function generateSwaggerEndpoint(
     endpoint += `      required: true,\n`;
     endpoint += `      content: {\n`;
     endpoint += `        'application/json': {\n`;
-    endpoint += `          schema: {\n`;
-    endpoint += `            type: 'object',\n`;
 
-    // Combine controller fields with smart defaults, avoiding duplicates
-    let allFields: Array<{
-      name: string;
-      type: string;
-      description: string;
-      required: boolean;
-    }> = [];
-    const fieldMap = new Map<string, any>();
-
-    // Add controller-detected fields first (higher priority)
-    if (
-      controllerInfo?.requestBodyFields &&
-      controllerInfo.requestBodyFields.length > 0
-    ) {
-      controllerInfo.requestBodyFields.forEach(field => {
-        const swaggerType = mapToSwaggerType(field.type);
-        fieldMap.set(field.name, {
-          name: field.name,
-          type: swaggerType,
-          description: field.type,
-          required: field.required,
-        });
-      });
-    } else if (controllerInfo?.requestBodyType) {
-      // Fallback to basic field parsing
-      const fields = controllerInfo.requestBodyType
-        .split(',')
-        .map(f => f.trim());
-      fields.forEach(field => {
-        const inferredType = inferFieldType(field, [], 0);
-        const swaggerType = mapToSwaggerType(inferredType);
-        fieldMap.set(field, {
-          name: field,
-          type: swaggerType,
-          description: inferredType,
-          required: true,
-        });
-      });
+    // Try to load Joi schema first (highest priority)
+    let joiSchemaObj: any = null;
+    if (route.validatorSchema) {
+      joiSchemaObj = await loadJoiSchemaFromValidator(
+        route.validatorSchema,
+        routeFilePath,
+        options.validatorsDir
+      );
     }
 
-    // Add smart defaults for missing fields if enabled
-    if (options.smartDefaults !== false) {
-      const smartFields = generateSmartDefaults(route);
-      smartFields.forEach(field => {
-        if (!fieldMap.has(field.name)) {
-          fieldMap.set(field.name, field);
-        }
-      });
-    }
-
-    // Convert map to array
-    allFields = Array.from(fieldMap.values());
-
-    if (allFields.length > 0) {
-      endpoint += `            properties: {\n`;
-      allFields.forEach(field => {
-        endpoint += `              ${field.name}: { type: '${field.type}', description: '${field.description}' },\n`;
-      });
-      endpoint += `            },\n`;
-      const requiredFields = allFields
-        .filter(f => f.required)
-        .map(f => `'${f.name}'`);
-      endpoint += `            required: [${requiredFields.join(', ')}],\n`;
+    if (joiSchemaObj && joiSchemaObj.schema) {
+      // Use Joi schema - convert to OpenAPI format
+      const schemaStr = JSON.stringify(joiSchemaObj.schema, null, 12);
+      // Indent each line properly for the endpoint string
+      const indentedSchema = schemaStr.split('\n').map((line: string, idx: number) => {
+        if (idx === 0) return line; // First line, no extra indent
+        return '            ' + line;
+      }).join('\n');
+      endpoint += `          schema: ${indentedSchema},\n`;
     } else {
-      endpoint += `            properties: {\n`;
-      endpoint += `              // TODO: Add request body properties from ${route.controllerMethod}\n`;
-      endpoint += `            },\n`;
+      // Fallback to controller inference and smart defaults
+      endpoint += `          schema: {\n`;
+      endpoint += `            type: 'object',\n`;
+
+      // Combine controller fields with smart defaults, avoiding duplicates
+      let allFields: Array<{
+        name: string;
+        type: string;
+        description: string;
+        required: boolean;
+      }> = [];
+      const fieldMap = new Map<string, any>();
+
+      // Add controller-detected fields first (higher priority)
+      if (
+        controllerInfo?.requestBodyFields &&
+        controllerInfo.requestBodyFields.length > 0
+      ) {
+        controllerInfo.requestBodyFields.forEach(field => {
+          const swaggerType = mapToSwaggerType(field.type);
+          fieldMap.set(field.name, {
+            name: field.name,
+            type: swaggerType,
+            description: field.type,
+            required: field.required,
+          });
+        });
+      } else if (controllerInfo?.requestBodyType) {
+        // Fallback to basic field parsing
+        const fields = controllerInfo.requestBodyType
+          .split(',')
+          .map(f => f.trim());
+        fields.forEach(field => {
+          const inferredType = inferFieldType(field, [], 0);
+          const swaggerType = mapToSwaggerType(inferredType);
+          fieldMap.set(field, {
+            name: field,
+            type: swaggerType,
+            description: inferredType,
+            required: true,
+          });
+        });
+      }
+
+      // Add smart defaults for missing fields if enabled
+      if (options.smartDefaults !== false) {
+        const smartFields = generateSmartDefaults(route);
+        smartFields.forEach(field => {
+          if (!fieldMap.has(field.name)) {
+            fieldMap.set(field.name, field);
+          }
+        });
+      }
+
+      // Convert map to array
+      allFields = Array.from(fieldMap.values());
+
+      if (allFields.length > 0) {
+        endpoint += `            properties: {\n`;
+        allFields.forEach(field => {
+          endpoint += `              ${field.name}: { type: '${field.type}', description: '${field.description}' },\n`;
+        });
+        endpoint += `            },\n`;
+        const requiredFields = allFields
+          .filter(f => f.required)
+          .map(f => `'${f.name}'`);
+        endpoint += `            required: [${requiredFields.join(', ')}],\n`;
+      } else {
+        endpoint += `            properties: {\n`;
+        endpoint += `              // TODO: Add request body properties from ${route.controllerMethod}\n`;
+        endpoint += `            },\n`;
+      }
+
+      endpoint += `          },\n`;
     }
 
-    endpoint += `          },\n`;
     endpoint += `        },\n`;
     endpoint += `      },\n`;
     endpoint += `    },\n`;

@@ -1,6 +1,13 @@
 import { RouteInfo, ControllerInfo, FieldInfo } from './types';
+import * as path from 'path';
+import * as fs from 'fs-extra';
 
-export function extractRoutes(fileContent: string, basePath: string): RouteInfo[] {
+export function extractRoutes(
+  fileContent: string,
+  basePath: string,
+  routeFilePath?: string,
+  validatorsDir?: string
+): RouteInfo[] {
   const routes: RouteInfo[] = [];
 
   // Use a more comprehensive regex that handles both single-line and multi-line routes
@@ -19,13 +26,19 @@ export function extractRoutes(fileContent: string, basePath: string): RouteInfo[
 
     // Extract middleware from the full middleware and handler string
     const middleware: string[] = [];
+    let validatorSchema: string | undefined;
+
     if (middlewareAndHandler.includes('authenticate'))
       middleware.push('authenticate');
     if (middlewareAndHandler.includes('requireAdmin'))
       middleware.push('requireAdmin');
     if (middlewareAndHandler.includes('validate')) {
       const validateMatch = middlewareAndHandler.match(/validate\(([^)]+)\)/);
-      if (validateMatch) middleware.push(`validate(${validateMatch[1]})`);
+      if (validateMatch) {
+        const schemaRef = validateMatch[1].trim();
+        middleware.push(`validate(${schemaRef})`);
+        validatorSchema = schemaRef; // Store schema reference for Joi extraction
+      }
     }
 
     const hasAuth = middleware.some(
@@ -65,6 +78,7 @@ export function extractRoutes(fileContent: string, basePath: string): RouteInfo[
       controllerMethod,
       hasAuth,
       middleware,
+      validatorSchema,
     });
   }
 

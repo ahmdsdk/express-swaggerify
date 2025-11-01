@@ -5,6 +5,7 @@ export interface RouteInfo {
   controllerMethod: string;
   hasAuth: boolean;
   middleware: string[];
+  validatorSchema?: string; // e.g., "authSchemas.register"
 }
 
 export interface FieldInfo {
@@ -65,6 +66,7 @@ export interface SimpleEndpointConfig {
 export interface SwaggerifyOptions {
   routesDir?: string;
   controllersDir?: string;
+  validatorsDir?: string; // Directory where Joi validators are located
   outputFile?: string;
   basePath?: string;
   title?: string;

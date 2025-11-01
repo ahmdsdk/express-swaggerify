@@ -54,6 +54,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - MIT License
 
+## [1.1.0] - 2025-11-01
+
+### Added
+- 🎉 **Joi Schema Extraction** - Automatically extracts request body schemas from Joi validators
+- 📦 Support for extracting schemas from `validate(authSchemas.register)` middleware calls
+- 🔄 Automatic conversion of Joi schemas to OpenAPI 3.0 JSON Schema format
+- 🎯 Smart schema loading with multiple validator directory search paths
+- 📝 New `--validators-dir` CLI option to specify validator directory location
+- ✅ Graceful fallback to controller inference if Joi schema not found
+- 🔧 Integration with `joi-to-json-schema` for accurate schema conversion
+
+### Changed
+- Enhanced route parser to detect and extract validator schema references
+- Updated generator to prioritize Joi schemas over inferred fields
+- Improved request body schema generation with proper OpenAPI 3.0 formatting
+
+### Technical
+- Added `joiExtractor.ts` module for schema loading and conversion
+- Uses `ts-node` for dynamic TypeScript module loading
+- Supports nested schema objects (e.g., `authSchemas.register`)
+- Handles multiple validator file naming conventions
+
 ## [Unreleased]
 
 ### Planned
