@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { convert } from 'joi-to-json-schema';
+// joi-to-json exports a parse function for converting Joi to JSON Schema
+const joiToJsonParse = require('joi-to-json');
 
 /**
  * Load and convert Joi schema from validator files
@@ -48,8 +49,11 @@ export async function loadJoiSchemaFromValidator(
 
     if (!validatorFile) {
       console.log(`  ⚠️  Validator file not found for ${schemaRef}`);
+      console.log(`  🔍 Searched in: ${possibleValidatorFiles.slice(0, 3).join(', ')}...`);
       return null;
     }
+
+    console.log(`  ✅ Found validator file: ${validatorFile} for ${schemaRef}`);
 
     // Use ts-node to dynamically require the TypeScript module
     // We need to register ts-node with the project's tsconfig
@@ -106,14 +110,27 @@ export async function loadJoiSchemaFromValidator(
 
     if (!joiSchema) {
       console.log(`  ⚠️  Schema ${schemaName} not found in ${schemaGroup} from ${validatorFile}`);
+      console.log(`  🔍 Available exports: ${Object.keys(validatorModule).join(', ')}`);
+      return null;
+    }
+
+    console.log(`  ✅ Found Joi schema: ${schemaName} in ${schemaGroup}`);
+
+    // Verify it's actually a Joi schema before converting
+    if (!joiSchema || (typeof joiSchema !== 'object' && typeof joiSchema !== 'function')) {
+      console.log(`  ⚠️  Schema ${schemaName} is not a valid Joi schema object`);
       return null;
     }
 
     // Convert Joi schema to JSON Schema (OpenAPI compatible)
     try {
-      const jsonSchema = convert(joiSchema);
+      // Use 'open-api-3.1' for OpenAPI 3.1 or 'open-api' for OpenAPI 3.0
+      const jsonSchema = joiToJsonParse(joiSchema, 'open-api-3.1', {}, {
+        required: true, // Include required fields
+      });
 
-      // Clean up the schema to ensure it's OpenAPI 3.0 compatible
+      // The result is already an OpenAPI-compatible schema
+      // Clean it up to ensure proper format
       const openApiSchema = cleanJsonSchema(jsonSchema);
 
       return { schema: openApiSchema };

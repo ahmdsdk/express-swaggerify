@@ -108,11 +108,15 @@ export async function generateSwaggerEndpoint(
     // Try to load Joi schema first (highest priority)
     let joiSchemaObj: any = null;
     if (route.validatorSchema) {
+      console.log(`  📦 Attempting to extract Joi schema: ${route.validatorSchema}`);
       joiSchemaObj = await loadJoiSchemaFromValidator(
         route.validatorSchema,
         routeFilePath,
         options.validatorsDir
       );
+      if (!joiSchemaObj || !joiSchemaObj.schema) {
+        console.log(`  ⚠️  Joi schema extraction failed for ${route.validatorSchema} - skipping smart defaults`);
+      }
     }
 
     if (joiSchemaObj && joiSchemaObj.schema) {
@@ -127,7 +131,7 @@ export async function generateSwaggerEndpoint(
     } else {
       // If a validator was specified but extraction failed, don't use smart defaults
       const hasValidator = !!route.validatorSchema;
-      
+
       // Fallback to controller inference and smart defaults (only if no validator was specified)
       endpoint += `          schema: {\n`;
       endpoint += `            type: 'object',\n`;

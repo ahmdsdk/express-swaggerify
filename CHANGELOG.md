@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - 🐛 Prevent smart defaults from being applied when a validator is specified but extraction fails
 - ✅ Avoid adding incorrect fields when Joi schema extraction is attempted but unsuccessful
+- 🔧 Fixed route parsing to properly handle nested parentheses in multi-line route definitions
+- 🔧 Improved validator detection to correctly parse `validate()` calls with complex middleware chains
+- 🔄 Replaced `joi-to-json-schema` with `joi-to-json` package for Joi 18.x compatibility
+- ✅ Joi schema extraction now working correctly - extracts accurate request body schemas from validators
 
 ## [1.1.0] - 2025-11-01
 

@@ -10,16 +10,32 @@ export function extractRoutes(
 ): RouteInfo[] {
   const routes: RouteInfo[] = [];
 
-  // Use a more comprehensive regex that handles both single-line and multi-line routes
-  // This regex matches router.METHOD followed by parentheses that may span multiple lines
-  const routeRegex =
-    /router\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]([\s\S]*?)\);?/g;
+  // Use a regex to find router.METHOD( calls, then manually parse to handle nested parentheses
+  const routeRegex = /router\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]/g;
 
   let match;
   while ((match = routeRegex.exec(fileContent)) !== null) {
     const method = match[1].toUpperCase();
     const routePath = match[2];
-    const middlewareAndHandler = match[3];
+    const startPos = match.index + match[0].length; // Position after the path string
+
+    // Now find the matching closing parenthesis for router.METHOD(
+    // Start with parenCount = 1 because we're already inside router.METHOD(
+    let parenCount = 1;
+    let endPos = fileContent.length;
+    for (let i = startPos; i < fileContent.length; i++) {
+      if (fileContent[i] === '(') parenCount++;
+      else if (fileContent[i] === ')') {
+        parenCount--;
+        if (parenCount === 0) {
+          endPos = i;
+          break;
+        }
+      }
+    }
+
+    // Extract the middleware and handler section (inside the router.METHOD parentheses)
+    let middlewareAndHandler = fileContent.substring(startPos, endPos);
 
     const fullPath =
       basePath + routePath.replace(/:\w+/g, match => `{${match.substring(1)}}`);
@@ -33,11 +49,32 @@ export function extractRoutes(
     if (middlewareAndHandler.includes('requireAdmin'))
       middleware.push('requireAdmin');
     if (middlewareAndHandler.includes('validate')) {
-      const validateMatch = middlewareAndHandler.match(/validate\(([^)]+)\)/);
-      if (validateMatch) {
-        const schemaRef = validateMatch[1].trim();
-        middleware.push(`validate(${schemaRef})`);
-        validatorSchema = schemaRef; // Store schema reference for Joi extraction
+      // Match validate() calls - handle multi-line cases and nested calls
+      // Look for validate( followed by content until the matching closing paren
+      const validateStart = middlewareAndHandler.indexOf('validate(');
+      if (validateStart !== -1) {
+        let parenCount = 0;
+        let start = validateStart + 'validate('.length;
+        let end = start;
+
+        // Find the matching closing parenthesis
+        for (let i = start; i < middlewareAndHandler.length; i++) {
+          if (middlewareAndHandler[i] === '(') parenCount++;
+          else if (middlewareAndHandler[i] === ')') {
+            if (parenCount === 0) {
+              end = i;
+              break;
+            }
+            parenCount--;
+          }
+        }
+
+        if (end > start) {
+          const schemaRef = middlewareAndHandler.substring(start, end).trim().replace(/\s+/g, ' ');
+          middleware.push(`validate(${schemaRef})`);
+          validatorSchema = schemaRef; // Store schema reference for Joi extraction
+          console.log(`  🔍 Detected validator: ${validatorSchema}`);
+        }
       }
     }
 
