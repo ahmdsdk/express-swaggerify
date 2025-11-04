@@ -30,6 +30,15 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
 
   console.log('📁 Processing route files...\n');
 
+  // Load types first if schemasDir is provided
+  let availableTypeNames: Set<string> = new Set();
+  if (options.schemasDir) {
+    console.log(`📚 Loading type definitions from ${options.schemasDir}...`);
+    const extractedSchemas = await loadTypesFromDirectory(options.schemasDir);
+    availableTypeNames = new Set(Object.keys(extractedSchemas));
+    console.log(`  ✅ Loaded ${availableTypeNames.size} type definition(s)\n`);
+  }
+
   // Parse router mounting structure from index.ts
   const routerMounts = await parseRouterMounts(routesDir, basePath);
 
@@ -72,8 +81,13 @@ export async function swaggerifyRoutes(options: SwaggerifyOptions = {}): Promise
 
       for (const route of routes) {
         let controllerInfo;
-        if (controllerContent) {
-          controllerInfo = analyzeControllerMethod(controllerContent, route.controllerMethod);
+        if (controllerContent && controllerFile) {
+          controllerInfo = analyzeControllerMethod(
+            controllerContent, 
+            route.controllerMethod, 
+            controllerFile,
+            availableTypeNames
+          );
         }
 
         const endpointStr = await generateSwaggerEndpoint(route, controllerInfo, fileName, options, routePath);
@@ -121,8 +135,6 @@ async function parseRouterMounts(routesDir: string, basePath: string): Promise<M
     const routerUseRegex = /router\.use\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*(\w+)Routes\s*\)/g;
     let match;
 
-    console.log('🔍 Looking for router.use() patterns...');
-
     while ((match = routerUseRegex.exec(indexContent)) !== null) {
       const mountPath = match[1]; // e.g., '/auth', '/users'
       const routeVariable = match[2]; // e.g., 'auth', 'user' (from authRoutes, userRoutes)
@@ -159,13 +171,31 @@ async function parseRouterMounts(routesDir: string, basePath: string): Promise<M
 
 function findControllerFile(routeFilePath: string, controllersDir: string): string | undefined {
   const routeFileName = path.basename(routeFilePath, '.ts');
-  const possibleControllerNames = [
-    `${routeFileName}Controller.ts`,
-    `${routeFileName}.controller.ts`,
-    `${routeFileName}.ts`
-  ];
+  const candidates: string[] = [];
 
-  for (const controllerName of possibleControllerNames) {
+  const addNamesFor = (name: string) => {
+    const cap = name.charAt(0).toUpperCase() + name.slice(1);
+    candidates.push(
+      `${name}Controller.ts`,
+      `${cap}Controller.ts`,
+      `${name}.controller.ts`,
+      `${cap}.controller.ts`,
+      `${name}.ts`,
+      `${cap}.ts`
+    );
+  };
+
+  // original name
+  addNamesFor(routeFileName);
+
+  // naive singularization
+  if (routeFileName.endsWith('ies')) {
+    addNamesFor(routeFileName.slice(0, -3) + 'y');
+  } else if (routeFileName.endsWith('s')) {
+    addNamesFor(routeFileName.slice(0, -1));
+  }
+
+  for (const controllerName of candidates) {
     const controllerPath = path.join(process.cwd(), controllersDir, controllerName);
     if (fs.existsSync(controllerPath)) {
       return controllerPath;
@@ -233,6 +263,81 @@ export async function generateSwaggerDocs(
     extractedSchemas = await loadTypesFromDirectory(options.schemasDir);
   }
 
+  // Helper: resolve $ref like '#/components/schemas/TypeName' -> 'TypeName'
+  const resolveRef = (ref: string | undefined): string | undefined => {
+    if (!ref) return undefined;
+    const match = ref.match(/#\/components\/schemas\/(.+)$/);
+    return match ? match[1] : undefined;
+  };
+
+  // Helper: generate example from a schema object (very simple, depth-limited)
+  const generateExampleFromSchema = (schemaObj: any, depth: number = 0): any => {
+    // Allow deeper nesting (e.g., ApiResponseWithUser.data.user.userProfile)
+    if (!schemaObj || depth > 8) return {};
+    if (schemaObj.$ref) {
+      const name = resolveRef(schemaObj.$ref) || schemaObj.$ref;
+      const target = name && extractedSchemas[name];
+      return target ? generateExampleFromSchema(target, depth + 1) : {};
+    }
+    const type = schemaObj.type;
+    if (type === 'string') {
+      if (schemaObj.enum && schemaObj.enum.length > 0) return schemaObj.enum[0];
+      if (schemaObj.format === 'date-time') return new Date().toISOString();
+      if (schemaObj.format === 'uuid') return '00000000-0000-0000-0000-000000000000';
+      return schemaObj.example ?? 'string';
+    }
+    if (type === 'number' || type === 'integer') return schemaObj.example ?? 0;
+    if (type === 'boolean') return schemaObj.example ?? true;
+    if (type === 'array') {
+      const itemsSchema = schemaObj.items || {};
+      // Direct primitives for clearer examples
+      if (itemsSchema.$ref) {
+        const name = resolveRef(itemsSchema.$ref) || itemsSchema.$ref;
+        const target = name && extractedSchemas[name];
+        const itemEx = target ? generateExampleFromSchema(target, depth + 1) : 'string';
+        return [itemEx];
+      }
+      if (itemsSchema.type === 'string') return [itemsSchema.example ?? 'string'];
+      if (itemsSchema.type === 'number' || itemsSchema.type === 'integer') return [itemsSchema.example ?? 0];
+      if (itemsSchema.type === 'boolean') return [itemsSchema.example ?? true];
+      if (itemsSchema.type === 'object' && itemsSchema.properties) {
+        return [generateExampleFromSchema(itemsSchema, depth + 1)];
+      }
+      // Fallback to string items
+      return ['string'];
+    }
+    if (type === 'object' || schemaObj.properties) {
+      const obj: any = {};
+      const props = schemaObj.properties || {};
+      for (const key of Object.keys(props)) {
+        obj[key] = generateExampleFromSchema(props[key], depth + 1);
+      }
+      return obj;
+    }
+    return {};
+  };
+
+  // Post-process responses to add examples when we know the extracted type
+  for (const p of Object.keys(paths)) {
+    for (const m of Object.keys(paths[p])) {
+      const op = paths[p][m];
+      if (!op.responses) continue;
+      for (const sc of Object.keys(op.responses)) {
+        const resp = op.responses[sc];
+        const content = resp.content?.['application/json'];
+        if (!content || !content.schema) continue;
+        const schema = content.schema;
+        const refName = resolveRef(schema.$ref);
+        if (refName && extractedSchemas[refName]) {
+          // Build example from the referenced schema
+          const example = generateExampleFromSchema(extractedSchemas[refName]);
+          // Attach
+          content.example = example;
+        }
+      }
+    }
+  }
+
   return {
     openapi: '3.0.0',
     info: {
@@ -243,21 +348,21 @@ export async function generateSwaggerDocs(
     servers,
     components: {
       schemas: {
-        ApiResponse: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean' },
-            data: { type: 'object' },
-            error: { type: 'string' },
-          },
-        },
-        ErrorResponse: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean', example: false },
-            error: { type: 'string' },
-          },
-        },
+        // ApiResponse: {
+        //   type: 'object',
+        //   properties: {
+        //     success: { type: 'boolean' },
+        //     data: { type: 'object' },
+        //     error: { type: 'string' },
+        //   },
+        // },
+        // ErrorResponse: {
+        //   type: 'object',
+        //   properties: {
+        //     success: { type: 'boolean', example: false },
+        //     error: { type: 'string' },
+        //   },
+        // },
         ...extractedSchemas,
         ...options.customSchemas,
       },

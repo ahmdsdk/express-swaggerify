@@ -236,11 +236,28 @@ export async function generateSwaggerEndpoint(
       description = 'No content';
     }
 
+    // Check if we have a specific response type for this status code
+    const responseType = controllerInfo?.responseTypesByStatus?.get(code);
+    const useSpecificType = responseType && options.schemasDir;
+
+    if (responseType && !options.schemasDir) {
+      console.log(`  ⚠️  Found response type ${responseType} for status ${code} but schemasDir not provided - using generic schema`);
+    }
+
     endpoint += `      '${code}': {\n`;
     endpoint += `        description: '${description}',\n`;
     endpoint += `        content: {\n`;
     endpoint += `          'application/json': {\n`;
-    endpoint += `            schema: { $ref: '#/components/schemas/${schemaType}' },\n`;
+    
+    if (useSpecificType) {
+      // Use the specific extracted type schema
+      console.log(`  ✅ Using extracted type ${responseType} for status ${code}`);
+      endpoint += `            schema: { $ref: '#/components/schemas/${responseType}' },\n`;
+    } else {
+      // Fallback to generic ApiResponse/ErrorResponse
+      endpoint += `            schema: { $ref: '#/components/schemas/${schemaType}' },\n`;
+    }
+    
     endpoint += `          },\n`;
     endpoint += `        },\n`;
     endpoint += `      },\n`;

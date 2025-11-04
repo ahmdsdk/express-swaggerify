@@ -84,8 +84,6 @@ export async function loadTypesFromDirectory(
         continue;
       }
 
-      console.log(`  🔍 Processing ${path.relative(process.cwd(), sourceFile.fileName)}`);
-
       // Visit all nodes in the source file
       ts.forEachChild(sourceFile, (node) => {
         // Extract interface declarations
@@ -256,6 +254,16 @@ function typeToJsonSchema(
   if (typeString === 'boolean') {
     return { type: 'boolean' };
   }
+  // Fast-path for common array syntaxes where type arguments may be lost
+  if (/^Array<string>$/.test(typeString) || /^ReadonlyArray<string>$/.test(typeString) || /string\[\]$/.test(typeString)) {
+    return { type: 'array', items: { type: 'string' } };
+  }
+  if (/^Array<number>$/.test(typeString) || /^ReadonlyArray<number>$/.test(typeString) || /number\[\]$/.test(typeString) || /bigint\[\]$/.test(typeString)) {
+    return { type: 'array', items: { type: 'number' } };
+  }
+  if (/^Array<boolean>$/.test(typeString) || /^ReadonlyArray<boolean>$/.test(typeString) || /boolean\[\]$/.test(typeString)) {
+    return { type: 'array', items: { type: 'boolean' } };
+  }
   if (typeString === 'null') {
     return { type: 'null' };
   }
@@ -274,25 +282,47 @@ function typeToJsonSchema(
         enumValues.push(unionType.value);
       } else {
         allStringLiterals = false;
-        break;
       }
     }
 
     if (allStringLiterals && enumValues.length > 0) {
-      return {
-        type: 'string',
-        enum: enumValues,
-      };
+      return { type: 'string', enum: enumValues };
     }
 
-    // If not all string literals, return first type's schema
-    if (unionTypes.length > 0) {
-      return typeToJsonSchema(unionTypes[0], checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
+    // Prefer non-nullish, non-any in unions
+    const nonNullish = unionTypes.filter((t: any) => {
+      const f = t.getFlags();
+      return !(f & ts.TypeFlags.Null) && !(f & ts.TypeFlags.Undefined) && !(f & ts.TypeFlags.Any);
+    });
+    // If any of the union members is an array, use that array member
+    const arrayMember = nonNullish.find((t: any) => {
+      const name = t.symbol?.getName?.();
+      const tsStr = checker.typeToString(t);
+      return name === 'Array' || name === 'ReadonlyArray' || /\[\]$/.test(tsStr);
+    });
+    if (arrayMember) {
+      return typeToJsonSchema(arrayMember, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
     }
+    // If exactly one meaningful member remains, use it (mark nullable if needed)
+    const meaningful = nonNullish.length === 0 ? unionTypes : nonNullish;
+    if (meaningful.length === 1) {
+      const result = typeToJsonSchema(meaningful[0], checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
+      // If original union had null/undefined, mark as nullable
+      const hadNullish = unionTypes.some((t: any) => {
+        const f = t.getFlags();
+        return (f & ts.TypeFlags.Null) || (f & ts.TypeFlags.Undefined);
+      });
+      if (hadNullish && result && typeof result === 'object') {
+        result.nullable = true;
+      }
+      return result;
+    }
+    // Fallback to first
+    return typeToJsonSchema(unionTypes[0], checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
   }
 
   // Handle array types
-  if (type.symbol?.getName() === 'Array' || checker.typeToString(type).includes('[]')) {
+  if (type.symbol?.getName() === 'Array' || type.symbol?.getName() === 'ReadonlyArray' || checker.typeToString(type).includes('[]')) {
     const elementType = (type as any).typeArguments?.[0];
     if (elementType) {
       return {
@@ -300,16 +330,39 @@ function typeToJsonSchema(
         items: typeToJsonSchema(elementType, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences),
       };
     }
-    return {
-      type: 'array',
-      items: {},
-    };
+    // Fallback for syntactic sugar like 'string[]'
+    const tStr = checker.typeToString(type);
+    const matchArr = tStr.match(/^(.*)\[\]$/);
+    if (matchArr) {
+      const elemStr = matchArr[1].trim();
+      let itemsSchema: any = {};
+      if (elemStr === 'string') itemsSchema = { type: 'string' };
+      else if (elemStr === 'number' || elemStr === 'bigint') itemsSchema = { type: 'number' };
+      else if (elemStr === 'boolean') itemsSchema = { type: 'boolean' };
+      else if (typeDeclarations.has(elemStr)) {
+        const decl = typeDeclarations.get(elemStr)!;
+        const visitedNext = new Set<string>(visitedTypes);
+        visitedNext.add(elemStr);
+        itemsSchema = decl.isInterface
+          ? extractInterfaceSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext)
+          : extractTypeAliasSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext);
+      }
+      return { type: 'array', items: itemsSchema };
+    }
+    // Final fallback when element type cannot be resolved
+    return { type: 'array', items: { type: 'string' } };
   }
 
-  // Handle object types (interfaces)
+  // Handle object and type literal types (interfaces, classes, anonymous object literals)
   // Always extract properties - don't skip if it's a declared type
   // The declared type check above only handles referencing already-extracted types
-  if (type.isClassOrInterface() || type.getSymbol()?.getName() === 'Object') {
+  if (flags & ts.TypeFlags.Object) {
+    // If this looks like a well-known numeric wrapper (Decimal/Big/BigNumber), map to number
+    const className = type.symbol?.getName?.();
+    if (className && /(decimal|bignumber|big)/i.test(className)) {
+      return { type: 'number' };
+    }
+
     const schema: any = {
       type: 'object',
       properties: {},
@@ -322,6 +375,11 @@ function typeToJsonSchema(
 
     properties.forEach((prop: any) => {
       const propName = prop.getName();
+      // Skip method-like members
+      const decl = prop.valueDeclaration;
+      if (decl && (ts.isMethodSignature?.(decl) || ts.isMethodDeclaration?.(decl))) {
+        return;
+      }
       const propType = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration!);
       
       // Create a new visited set for this property to allow referencing types
@@ -365,8 +423,8 @@ function typeToJsonSchema(
     }
   }
 
-  // Handle array types
-  if (type.symbol?.getName() === 'Array' || checker.typeToString(type).includes('[]')) {
+  // Handle array types (second guard for other branches)
+  if (type.symbol?.getName() === 'Array' || type.symbol?.getName() === 'ReadonlyArray' || checker.typeToString(type).includes('[]')) {
     const elementType = (type as any).typeArguments?.[0];
     if (elementType) {
       return {
@@ -374,6 +432,25 @@ function typeToJsonSchema(
         items: typeToJsonSchema(elementType, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences),
       };
     }
+    const tStr = checker.typeToString(type);
+    const matchArr = tStr.match(/^(.*)\[\]$/);
+    if (matchArr) {
+      const elemStr = matchArr[1].trim();
+      let itemsSchema: any = {};
+      if (elemStr === 'string') itemsSchema = { type: 'string' };
+      else if (elemStr === 'number' || elemStr === 'bigint') itemsSchema = { type: 'number' };
+      else if (elemStr === 'boolean') itemsSchema = { type: 'boolean' };
+      else if (typeDeclarations.has(elemStr)) {
+        const decl = typeDeclarations.get(elemStr)!;
+        const visitedNext = new Set<string>(visitedTypes);
+        visitedNext.add(elemStr);
+        itemsSchema = decl.isInterface
+          ? extractInterfaceSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext)
+          : extractTypeAliasSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext);
+      }
+      return { type: 'array', items: itemsSchema };
+    }
+    return { type: 'array', items: { type: 'string' } };
   }
 
   // Handle string literal types

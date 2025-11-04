@@ -49,7 +49,6 @@ export async function loadJoiSchemaFromValidator(
 
     if (!validatorFile) {
       console.log(`  ⚠️  Validator file not found for ${schemaRef}`);
-      console.log(`  🔍 Searched in: ${possibleValidatorFiles.slice(0, 3).join(', ')}...`);
       return null;
     }
 
@@ -110,7 +109,6 @@ export async function loadJoiSchemaFromValidator(
 
     if (!joiSchema) {
       console.log(`  ⚠️  Schema ${schemaName} not found in ${schemaGroup} from ${validatorFile}`);
-      console.log(`  🔍 Available exports: ${Object.keys(validatorModule).join(', ')}`);
       return null;
     }
 

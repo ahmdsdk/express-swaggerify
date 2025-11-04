@@ -19,6 +19,7 @@ export interface ControllerInfo {
   requestBodyFields?: FieldInfo[];
   responseType?: string;
   statusCodes: number[];
+  responseTypesByStatus?: Map<number, string>; // Map status code to response type name
 }
 
 export interface SmartField {
@@ -49,6 +50,7 @@ export interface SimpleEndpointConfig {
       content?: {
         'application/json': {
           schema: any;
+          example?: any;
         };
       };
     };

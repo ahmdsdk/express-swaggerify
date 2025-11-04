@@ -2,6 +2,14 @@ import { RouteInfo, ControllerInfo, FieldInfo } from './types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 
+// Try to import TypeScript, fallback gracefully if not available
+let tsModule: typeof import('typescript') | null = null;
+try {
+  tsModule = require('typescript');
+} catch (error) {
+  // TypeScript not available
+}
+
 export function extractRoutes(
   fileContent: string,
   basePath: string,
@@ -73,7 +81,6 @@ export function extractRoutes(
           const schemaRef = middlewareAndHandler.substring(start, end).trim().replace(/\s+/g, ' ');
           middleware.push(`validate(${schemaRef})`);
           validatorSchema = schemaRef; // Store schema reference for Joi extraction
-          console.log(`  🔍 Detected validator: ${validatorSchema}`);
         }
       }
     }
@@ -86,11 +93,15 @@ export function extractRoutes(
     let handlerName = 'unknown';
     let controllerMethod = 'unknown';
 
-    // Look for controller.method patterns
-    const handlerMatch = middlewareAndHandler.match(/(\w+\.[\w.]+)/g);
-    if (handlerMatch) {
-      handlerName = handlerMatch[handlerMatch.length - 1];
-      controllerMethod = handlerName.split('.').pop() || handlerName;
+    // Look for controller.method pattern specifically in the LAST argument
+    // Prefer the last property access before optional .bind(...)
+    const matches = Array.from(middlewareAndHandler.matchAll(/([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)(?=\s*(?:\.bind\s*\(|,|\)|$))/g));
+    if (matches.length > 0) {
+      const last = matches[matches.length - 1];
+      const obj = last[1];
+      const meth = last[2];
+      handlerName = `${obj}.${meth}`;
+      controllerMethod = meth;
     } else {
       // Handle anonymous functions like (req, res) => { ... }
       if (
@@ -144,7 +155,9 @@ function generateOperationId(method: string, routePath: string): string {
 
 export function analyzeControllerMethod(
   controllerContent: string,
-  methodName: string
+  methodName: string,
+  controllerFilePath?: string,
+  availableTypeNames?: Set<string>
 ): ControllerInfo {
   const lines = controllerContent.split('\n');
   const statusCodes: number[] = [];
@@ -154,15 +167,19 @@ export function analyzeControllerMethod(
   let inMethod = false;
   let braceCount = 0;
 
+  // Build candidate method names (original and without HTTP verb prefix)
+  const methodCandidates: string[] = [methodName];
+  const stripped = methodName.replace(/^(get|post|put|patch|delete)/i, '');
+  if (stripped && stripped !== methodName) {
+    methodCandidates.push(stripped);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
     // Find method definition
-    if (
-      line.includes(`${methodName}`) &&
-      (line.includes('async') || line.includes('='))
-    ) {
-      inMethod = true;
+    if ((line.includes('async') || line.includes('=')) && methodCandidates.some(c => line.toLowerCase().includes(c.toLowerCase()))) {
+        inMethod = true;
     }
 
     if (inMethod) {
@@ -213,7 +230,557 @@ export function analyzeControllerMethod(
     statusCodes.push(200);
   }
 
-  return { requestBodyType, requestBodyFields, responseType, statusCodes };
+  // Extract response types using TypeScript compiler API if available
+  const responseTypesByStatus = tsModule && controllerFilePath
+    ? extractResponseTypesFromMethod(controllerContent, controllerFilePath, methodName, availableTypeNames)
+    : undefined;
+
+  if (responseTypesByStatus && responseTypesByStatus.size > 0) {
+    console.log(`  📊 Extracted response types for ${methodName}:`, Array.from(responseTypesByStatus.entries()).map(([code, type]) => `${code}: ${type}`).join(', '));
+    // Ensure statusCodes includes any discovered statuses (e.g., 200 from res.json without res.status)
+    for (const code of responseTypesByStatus.keys()) {
+      if (!statusCodes.includes(code)) {
+        statusCodes.push(code);
+      }
+    }
+  }
+
+  return { requestBodyType, requestBodyFields, responseType, statusCodes, responseTypesByStatus };
+}
+
+/**
+ * Extract response types for each status code using TypeScript compiler API
+ */
+function extractResponseTypesFromMethod(
+  controllerContent: string,
+  controllerFilePath: string,
+  methodName: string,
+  availableTypeNames?: Set<string>
+): Map<number, string> | undefined {
+  if (!tsModule) {
+    return undefined;
+  }
+
+  const ts = tsModule;
+  const responseTypes = new Map<number, string>();
+
+  try {
+    // Create a TypeScript program for the controller file
+    const program = ts.createProgram([controllerFilePath], {
+      target: ts.ScriptTarget.Latest,
+      module: ts.ModuleKind.CommonJS,
+      allowJs: false,
+      skipLibCheck: true,
+    });
+
+    const checker = program.getTypeChecker();
+    const sourceFile = program.getSourceFile(controllerFilePath);
+
+    if (!sourceFile) {
+      return undefined;
+    }
+
+    // Find the method declaration (try original and without HTTP verb)
+    const methodCandidates: string[] = [methodName];
+    const stripped = methodName.replace(/^(get|post|put|patch|delete)/i, '');
+    if (stripped && stripped !== methodName) methodCandidates.push(stripped);
+    let methodNode: any = null;
+    ts.forEachChild(sourceFile, (node) => {
+      if (ts.isClassDeclaration(node)) {
+        // Traverse class members
+        ts.forEachChild(node, (member) => {
+          if (ts.isMethodDeclaration(member) || ts.isPropertyDeclaration(member)) {
+            const name = member.name?.getText(sourceFile);
+            if (name && methodCandidates.some(c => name.toLowerCase() === c.toLowerCase())) {
+              methodNode = member;
+            }
+          }
+        });
+      } else if (ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) {
+        const name = node.name?.getText(sourceFile);
+        if (name && methodCandidates.some(c => name.toLowerCase() === c.toLowerCase())) {
+          methodNode = node;
+        }
+      }
+    });
+
+    if (!methodNode) {
+      console.log(`  ⚠️  Method ${methodName} not found in ${controllerFilePath}`);
+      return undefined;
+    }
+
+    // If this is a class property with an arrow function, use the function node for params/body
+    let functionNode: any = methodNode;
+    if (ts.isPropertyDeclaration(methodNode) && methodNode.initializer && (ts.isArrowFunction(methodNode.initializer) || ts.isFunctionExpression(methodNode.initializer))) {
+      functionNode = methodNode.initializer;
+    }
+
+    // Collect potential Response parameter names (e.g., res)
+    const responseParamNames = new Set<string>();
+    if (((ts.isMethodDeclaration(functionNode) || ts.isFunctionLike(functionNode)) && (functionNode as any).parameters)) {
+      (functionNode as any).parameters.forEach((param: any) => {
+        const paramName = param.name?.getText(sourceFile);
+        if (paramName && ts.isIdentifier(param.name)) {
+          if (param.type) {
+            const pType = checker.getTypeAtLocation(param.type);
+            const pTypeStr = checker.typeToString(pType);
+            if (/Response/i.test(pTypeStr)) {
+              responseParamNames.add(paramName);
+            }
+          }
+        }
+      });
+      // Heuristic: if not detected by type, assume second param is response
+      if (responseParamNames.size === 0 && (functionNode as any).parameters.length >= 2) {
+        const second = (functionNode as any).parameters[1];
+        if (second && ts.isIdentifier(second.name)) {
+          responseParamNames.add(second.name.getText(sourceFile));
+        }
+      }
+    }
+
+    // Check if method has a return type annotation (e.g., Promise<ApiResponse<User>>)
+    if (ts.isMethodDeclaration(methodNode) && methodNode.type) {
+      const returnType = checker.getTypeAtLocation(methodNode.type);
+      const returnTypeString = checker.typeToString(returnType);
+      // Try to extract type name from return type
+      const returnTypeMatch = returnTypeString.match(/([A-Z][a-zA-Z0-9]+)/);
+      if (returnTypeMatch) {
+        const extractedReturnType = returnTypeMatch[1];
+        const builtInTypes = ['Promise', 'Object', 'Partial', 'Pick', 'Omit', 'Record'];
+        if (!builtInTypes.includes(extractedReturnType)) {
+          // If we have a return type, we could use it as a default for all status codes
+          // But let's not do that - let's extract from actual res.status() calls instead
+        }
+      }
+    }
+
+    // First pass: Collect all variable declarations in the method with their types and initializers
+    const variableTypes = new Map<string, string>();
+    const variableDeclarations = new Map<string, any[]>();
+    const collectVariables = (node: any) => {
+      if (ts.isVariableDeclaration(node)) {
+        const varName = node.name?.getText(sourceFile);
+        if (varName && ts.isIdentifier(node.name)) {
+          // Store the declaration node so we can examine its initializer later (keep all decls)
+          const list = variableDeclarations.get(varName) || [];
+          list.push(node);
+          variableDeclarations.set(varName, list);
+          
+          // Check if there's an explicit type annotation
+          if (node.type) {
+            const type = checker.getTypeAtLocation(node.type);
+            const typeString = checker.typeToString(type);
+            
+            // Extract full type name
+            // Try to get the full type name, not just the first word
+            const symbol = type.getSymbol();
+              if (symbol) {
+                const symbolName = symbol.getName();
+                const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                if (!builtInTypes.includes(symbolName)) {
+                  variableTypes.set(varName, symbolName);
+                }
+              } else {
+              // Fallback to regex matching for complex types
+              const typeMatch = typeString.match(/([A-Z][a-zA-Z0-9]+)/);
+              if (typeMatch) {
+                const extractedType = typeMatch[1];
+                const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                if (!builtInTypes.includes(extractedType)) {
+                  variableTypes.set(varName, extractedType);
+                }
+              }
+            }
+          } else {
+            // Infer type from initializer
+            if (node.initializer) {
+              const type = checker.getTypeAtLocation(node.initializer);
+              const typeString = checker.typeToString(type);
+              const symbol = type.getSymbol();
+              if (symbol) {
+                const symbolName = symbol.getName();
+                const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                if (!builtInTypes.includes(symbolName)) {
+                  variableTypes.set(varName, symbolName);
+                }
+              } else {
+                const typeMatch = typeString.match(/([A-Z][a-zA-Z0-9]+)/);
+                if (typeMatch) {
+                  const extractedType = typeMatch[1];
+                  const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                  if (!builtInTypes.includes(extractedType)) {
+                  variableTypes.set(varName, extractedType);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, collectVariables);
+    };
+
+    collectVariables(functionNode);
+
+    // Second pass: Find all res.status(code).json(...) expressions
+    const visit = (node: any) => {
+      // Look for res.status().json() patterns
+      if (ts.isCallExpression(node)) {
+        const expression = node.expression;
+        
+        // Check if this is a .json() call
+        if (ts.isPropertyAccessExpression(expression) && expression.name?.getText() === 'json') {
+          const objectExpr = expression.expression;
+          // Handle res.json(...) without explicit status
+          if (ts.isPropertyAccessExpression(objectExpr)) {
+            const baseExpr = objectExpr.expression;
+            if (ts.isIdentifier(baseExpr)) {
+              const baseName = baseExpr.getText(sourceFile);
+              if (responseParamNames.has(baseName)) {
+                const statusCode = 200;
+                const jsonArg = node.arguments[0];
+                if (jsonArg) {
+                  let extractedType: string | undefined;
+
+                  // If it's an identifier, check if we have its type from variable declarations
+                  if (ts.isIdentifier(jsonArg)) {
+                    const varName = jsonArg.getText(sourceFile);
+                    extractedType = variableTypes.get(varName);
+
+                    // If we found ApiResponse (generic), try to find a more specific type by examining the initializer
+                    if (extractedType === 'ApiResponse' && variableDeclarations.has(varName)) {
+                      const decls = (variableDeclarations.get(varName) || []).filter(d => d.pos <= node.pos);
+                      let varDecl = decls.sort((a, b) => b.pos - a.pos)[0];
+                      if (!varDecl) {
+                        const all = variableDeclarations.get(varName)!;
+                        varDecl = all[all.length - 1];
+                      }
+                      // First, check if the variable has a more specific type annotation
+                      if (varDecl.type) {
+                        const typeAnnotation = checker.getTypeAtLocation(varDecl.type);
+                        const typeAnnotationString = checker.typeToString(typeAnnotation);
+                        const typeMatch = typeAnnotationString.match(/([A-Z][a-zA-Z0-9]+)/);
+                        if (typeMatch) {
+                          const annotatedType = typeMatch[1];
+                          const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record', 'ApiResponse'];
+                          if (!builtInTypes.includes(annotatedType) && availableTypeNames && availableTypeNames.has(annotatedType)) {
+                            extractedType = annotatedType;
+                          }
+                        }
+                      }
+                      // If we still have ApiResponse, check the initializer structure
+                      if (extractedType === 'ApiResponse' && varDecl.initializer) {
+                        if (ts.isObjectLiteralExpression(varDecl.initializer)) {
+                          const dataPropertyNames: string[] = [];
+                          varDecl.initializer.properties.forEach((prop: any) => {
+                            if (ts.isPropertyAssignment(prop)) {
+                              const propName = prop.name?.getText(sourceFile);
+                              if (propName === 'data' && prop.initializer) {
+                                if (ts.isObjectLiteralExpression(prop.initializer)) {
+                                  prop.initializer.properties.forEach((dataProp: any) => {
+                                    if (ts.isPropertyAssignment(dataProp)) {
+                                      const dataPropName = dataProp.name?.getText(sourceFile);
+                                      if (dataPropName) {
+                                        dataPropertyNames.push(dataPropName);
+                                      }
+                                    }
+                                  });
+                                } else if (ts.isIdentifier(prop.initializer)) {
+                                  const dataVarName = prop.initializer.getText(sourceFile);
+                                  const dataVarType = variableTypes.get(dataVarName);
+                                  if (dataVarType && availableTypeNames && availableTypeNames.has(dataVarType)) {
+                                    extractedType = dataVarType;
+                                  }
+                                }
+                              }
+                            }
+                          });
+                          if (dataPropertyNames.length > 0 && availableTypeNames && availableTypeNames.size > 0 && extractedType === 'ApiResponse') {
+                            for (const typeName of availableTypeNames) {
+                              if (typeName === 'ApiResponse' || typeName === 'ErrorResponse') continue;
+                              const typeNameLower = typeName.toLowerCase();
+                              for (const propName of dataPropertyNames) {
+                                const propNameCapitalized = propName.charAt(0).toUpperCase() + propName.slice(1);
+                                if (typeNameLower.includes(propName.toLowerCase()) || typeName.includes(propNameCapitalized)) {
+                                  extractedType = typeName;
+                                  break;
+                                }
+                              }
+                              if (extractedType !== 'ApiResponse') break;
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // If we didn't find it from variables, try to infer from the expression type
+                  if (!extractedType) {
+                    const type = checker.getTypeAtLocation(jsonArg);
+                    const symbol = type.getSymbol();
+                    if (symbol) {
+                      const symbolName = symbol.getName();
+                      const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                      if (symbolName && symbolName[0] === symbolName[0].toUpperCase() && !builtInTypes.includes(symbolName)) {
+                        const typeDecl = symbol.getDeclarations()?.[0];
+                        if (typeDecl && (ts.isInterfaceDeclaration(typeDecl) || ts.isTypeAliasDeclaration(typeDecl))) {
+                          extractedType = symbolName;
+                        }
+                      }
+                    }
+                    if (!extractedType && ts.isObjectLiteralExpression(jsonArg)) {
+                      jsonArg.properties.forEach((prop: any) => {
+                        if (ts.isPropertyAssignment(prop)) {
+                          const propName = prop.name?.getText(sourceFile);
+                          if (propName === 'data' && prop.initializer) {
+                            const dataType = checker.getTypeAtLocation(prop.initializer);
+                            const dataSymbol = dataType.getSymbol();
+                            if (dataSymbol) {
+                              const symbolName = dataSymbol.getName();
+                              const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                              if (symbolName && symbolName[0] === symbolName[0].toUpperCase() && !builtInTypes.includes(symbolName)) {
+                                const typeDecl = dataSymbol.getDeclarations()?.[0];
+                                if (typeDecl && (ts.isInterfaceDeclaration(typeDecl) || ts.isTypeAliasDeclaration(typeDecl))) {
+                                  if (!availableTypeNames || availableTypeNames.has(symbolName)) {
+                                    extractedType = symbolName;
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      });
+                    }
+                  }
+
+                  if (extractedType) {
+                    if (!availableTypeNames || availableTypeNames.has(extractedType)) {
+                      responseTypes.set(statusCode, extractedType);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          
+          // Check if objectExpr is a .status() call
+          if (ts.isCallExpression(objectExpr)) {
+            const statusExpression = objectExpr.expression;
+            if (ts.isPropertyAccessExpression(statusExpression) && statusExpression.name?.getText() === 'status') {
+              // Get the status code argument
+              const statusArg = objectExpr.arguments[0];
+              if (statusArg && ts.isNumericLiteral(statusArg)) {
+                const statusCode = parseInt(statusArg.text);
+                
+                // Get the argument passed to .json()
+                const jsonArg = node.arguments[0];
+                if (jsonArg) {
+                  let extractedType: string | undefined;
+                  
+                  // If it's an identifier, check if we have its type from variable declarations
+                  if (ts.isIdentifier(jsonArg)) {
+                    const varName = jsonArg.getText(sourceFile);
+                    extractedType = variableTypes.get(varName);
+                    
+                    // If we found ApiResponse (generic), try to find a more specific type by examining the initializer
+                    if (extractedType === 'ApiResponse' && variableDeclarations.has(varName)) {
+                      // Pick the nearest preceding declaration for this variable relative to the current call site
+                      const decls = (variableDeclarations.get(varName) || []).filter(d => d.pos <= node.pos);
+                      let varDecl = decls.sort((a, b) => b.pos - a.pos)[0];
+                      if (!varDecl) {
+                        // Fallback to last seen declaration
+                        const all = variableDeclarations.get(varName)!;
+                        varDecl = all[all.length - 1];
+                      }
+                      
+                      // First, check if the variable has a more specific type annotation
+                      if (varDecl.type) {
+                        const typeAnnotation = checker.getTypeAtLocation(varDecl.type);
+                        const typeAnnotationString = checker.typeToString(typeAnnotation);
+                        
+                        // Extract type name from annotation
+                        const typeMatch = typeAnnotationString.match(/([A-Z][a-zA-Z0-9]+)/);
+                        if (typeMatch) {
+                          const annotatedType = typeMatch[1];
+                          const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record', 'ApiResponse'];
+                          if (!builtInTypes.includes(annotatedType) && availableTypeNames && availableTypeNames.has(annotatedType)) {
+                            extractedType = annotatedType;
+                          }
+                        }
+                      }
+                      
+                      // If we still have ApiResponse, check the initializer structure
+                      if (extractedType === 'ApiResponse' && varDecl.initializer) {
+                        // Analyze the initializer to find a more specific type
+                        const initializerType = checker.getTypeAtLocation(varDecl.initializer);
+                        const initializerTypeString = checker.typeToString(initializerType);
+                        
+                        // If the initializer is an object literal, extract its structure
+                        if (ts.isObjectLiteralExpression(varDecl.initializer)) {
+                          const dataPropertyNames: string[] = [];
+                          varDecl.initializer.properties.forEach((prop: any) => {
+                            if (ts.isPropertyAssignment(prop)) {
+                              const propName = prop.name?.getText(sourceFile);
+                              if (propName === 'data' && prop.initializer) {
+                                // Check if data is an object literal
+                                if (ts.isObjectLiteralExpression(prop.initializer)) {
+                                  prop.initializer.properties.forEach((dataProp: any) => {
+                                    if (ts.isPropertyAssignment(dataProp)) {
+                                      const dataPropName = dataProp.name?.getText(sourceFile);
+                                      if (dataPropName) {
+                                        dataPropertyNames.push(dataPropName);
+                                      }
+                                    }
+                                  });
+                                } else if (ts.isIdentifier(prop.initializer)) {
+                                  // If data is a variable reference (e.g., data: user), get its type
+                                  const dataVarName = prop.initializer.getText(sourceFile);
+                                  const dataVarType = variableTypes.get(dataVarName);
+                                  if (dataVarType && availableTypeNames && availableTypeNames.has(dataVarType)) {
+                                    extractedType = dataVarType;
+                                  }
+                                }
+                              }
+                            }
+                          });
+                          
+                          if (dataPropertyNames.length > 0 && availableTypeNames && availableTypeNames.size > 0 && extractedType === 'ApiResponse') {
+                            // Try to match against available types
+                            for (const typeName of availableTypeNames) {
+                              if (typeName === 'ApiResponse' || typeName === 'ErrorResponse') {
+                                continue;
+                              }
+                              const typeNameLower = typeName.toLowerCase();
+                              for (const propName of dataPropertyNames) {
+                                const propNameCapitalized = propName.charAt(0).toUpperCase() + propName.slice(1);
+                                if (typeNameLower.includes(propName.toLowerCase()) ||
+                                    typeName.includes(propNameCapitalized)) {
+                                  extractedType = typeName;
+                                  break;
+                                }
+                              }
+                              if (extractedType !== 'ApiResponse') break;
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  
+                  // If we didn't find it from variables, try to infer from the expression type
+                  if (!extractedType) {
+                    const type = checker.getTypeAtLocation(jsonArg);
+                    const typeString = checker.typeToString(type);
+                    
+                    // Try multiple strategies to extract type name
+                    // Strategy 1: Check if it's a named type (interface/type alias)
+                    const symbol = type.getSymbol();
+                    if (symbol) {
+                      const symbolName = symbol.getName();
+                      const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                      // Check if symbol name is valid and not built-in
+                      if (symbolName && symbolName[0] === symbolName[0].toUpperCase() && !builtInTypes.includes(symbolName)) {
+                        // Additional check: make sure it's not an anonymous object type
+                        const typeDecl = symbol.getDeclarations()?.[0];
+                        if (typeDecl && (ts.isInterfaceDeclaration(typeDecl) || ts.isTypeAliasDeclaration(typeDecl))) {
+                          extractedType = symbolName;
+                        }
+                      }
+                    }
+                    
+                    // Strategy 2: Try regex matching on type string (for generics like ApiResponse<User>)
+                    if (!extractedType) {
+                      const typeNameMatch = typeString.match(/([A-Z][a-zA-Z0-9]+)/);
+                      if (typeNameMatch) {
+                        const candidateType = typeNameMatch[1];
+                        const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                        if (!builtInTypes.includes(candidateType)) {
+                          // Verify it's actually a declared type
+                          const symbol = type.getSymbol();
+                          if (symbol && symbol.getName() === candidateType) {
+                            extractedType = candidateType;
+                          }
+                        }
+                      }
+                    }
+                    
+                    // Strategy 3: For object literals with 'data' property, try to extract the data type
+                    if (!extractedType && ts.isObjectLiteralExpression(jsonArg)) {
+                      // Look for a 'data' property and try to get its type
+                      jsonArg.properties.forEach((prop: any) => {
+                        if (ts.isPropertyAssignment(prop)) {
+                          const propName = prop.name?.getText(sourceFile);
+                          if (propName === 'data' && prop.initializer) {
+                            const dataType = checker.getTypeAtLocation(prop.initializer);
+                            const dataTypeString = checker.typeToString(dataType);
+                            
+                            // First try to get the symbol name if it's a declared type
+                            const dataSymbol = dataType.getSymbol();
+                            if (dataSymbol) {
+                              const symbolName = dataSymbol.getName();
+                              const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                              if (symbolName && symbolName[0] === symbolName[0].toUpperCase() && !builtInTypes.includes(symbolName)) {
+                                const typeDecl = dataSymbol.getDeclarations()?.[0];
+                                if (typeDecl && (ts.isInterfaceDeclaration(typeDecl) || ts.isTypeAliasDeclaration(typeDecl))) {
+                                  // Check if this type exists in available types, if provided
+                                  if (!availableTypeNames || availableTypeNames.has(symbolName)) {
+                                    extractedType = symbolName;
+                                  }
+                                }
+                              }
+                            }
+                            
+                            // Fallback: try regex matching to any declared type
+                            if (!extractedType) {
+                              const dataTypeMatch = dataTypeString.match(/([A-Z][a-zA-Z0-9]+)/);
+                              if (dataTypeMatch) {
+                                const candidateType = dataTypeMatch[1];
+                                const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
+                                if (!builtInTypes.includes(candidateType)) {
+                                  if (!availableTypeNames || availableTypeNames.has(candidateType)) {
+                                    extractedType = candidateType;
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      });
+                    }
+                    
+                    // Removed Strategy 4 heuristic matching to avoid hard-coded/type-name guessing
+                  }
+                  
+                  if (extractedType) {
+                    if (!availableTypeNames || availableTypeNames.has(extractedType)) {
+                      responseTypes.set(statusCode, extractedType);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    visit(functionNode);
+    
+    if (responseTypes.size === 0) {
+      console.log(`  ⚠️  No response types extracted for ${methodName} - object literals may not have explicit types`);
+    }
+  } catch (error) {
+    // Log error for debugging
+    console.log(`  ⚠️  Could not extract response types for ${methodName}:`, (error as Error).message);
+    if ((error as Error).stack) {
+      console.log(`  Stack:`, (error as Error).stack?.split('\n').slice(0, 3).join('\n'));
+    }
+  }
+
+  return responseTypes.size > 0 ? responseTypes : undefined;
 }
 
 function inferFieldType(fieldName: string, lines: string[], startLine: number): string {
