@@ -67,6 +67,7 @@ export interface SwaggerifyOptions {
   routesDir?: string;
   controllersDir?: string;
   validatorsDir?: string; // Directory where Joi validators are located
+  schemasDir?: string; // Directory where TypeScript type definitions are located
   outputFile?: string;
   basePath?: string;
   title?: string;

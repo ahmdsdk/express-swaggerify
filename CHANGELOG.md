@@ -54,6 +54,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Contributing guidelines
 - MIT License
 
+## [1.2.0] - 2025-01-XX
+
+### Added
+- 🎉 **TypeScript Type Extraction** - Automatically extracts TypeScript interfaces and type aliases from a types directory
+- 📦 New `--schemas-dir` CLI option to specify directory containing TypeScript type definitions
+- 🔄 Automatic conversion of TypeScript types to OpenAPI JSON schemas
+- 🔗 **Type Inlining** - Referenced types are automatically inlined into parent types
+- ✅ Support for extracting interfaces, type aliases, unions, arrays, and primitive types
+- 🔧 Proper handling of optional properties, nullable types, and circular references
+
+### Changed
+- Enhanced schema generation to support TypeScript type extraction
+- Improved type detection using TypeScript compiler API
+- Better boolean type detection using TypeScript type flags
+
+### Technical
+- Added `typeExtractor.ts` module for TypeScript type parsing and conversion
+- Uses TypeScript compiler API to parse and extract type definitions
+- Supports nested type references with automatic inlining
+- Handles circular references gracefully with `$ref` fallback
+
 ## [1.1.1] - 2025-11-01
 
 ### Fixed

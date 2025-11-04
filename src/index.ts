@@ -4,6 +4,7 @@ import { glob } from 'glob';
 import { extractRoutes, analyzeControllerMethod } from './parser';
 import { generateSwaggerEndpoint } from './generator';
 import { SwaggerifyOptions, SimpleEndpointConfig } from './types';
+import { loadTypesFromDirectory } from './typeExtractor';
 
 export { SwaggerifyOptions, SimpleEndpointConfig } from './types';
 
@@ -225,6 +226,13 @@ export async function generateSwaggerDocs(
     paths[path][method] = pathItem;
   });
 
+  // Load TypeScript types from schemasDir if specified
+  let extractedSchemas: Record<string, any> = {};
+  if (options.schemasDir) {
+    console.log(`\n📚 Loading type definitions from ${options.schemasDir}...`);
+    extractedSchemas = await loadTypesFromDirectory(options.schemasDir);
+  }
+
   return {
     openapi: '3.0.0',
     info: {
@@ -250,6 +258,7 @@ export async function generateSwaggerDocs(
             error: { type: 'string' },
           },
         },
+        ...extractedSchemas,
         ...options.customSchemas,
       },
       securitySchemes: {

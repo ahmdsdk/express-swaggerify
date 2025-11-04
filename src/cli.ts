@@ -16,6 +16,7 @@ program
   .option('-r, --routes-dir <dir>', 'Routes directory', './src/routes')
   .option('-c, --controllers-dir <dir>', 'Controllers directory', './src/controllers')
   .option('--validators-dir <dir>', 'Validators directory', './src/api/v1/validators')
+  .option('--schemas-dir <dir>', 'Schemas directory for TypeScript type definitions')
   .option('-o, --output <file>', 'Output file', './swagger-docs.ts')
   .option('-b, --base-path <path>', 'Base API path', '/api/v1')
   .option('-t, --title <title>', 'API title', 'API Documentation')
@@ -29,6 +30,7 @@ program
         routesDir: options.routesDir,
         controllersDir: options.controllersDir,
         validatorsDir: options.validatorsDir,
+        schemasDir: options.schemasDir,
         outputFile: options.output,
         basePath: options.basePath,
         title: options.title,
