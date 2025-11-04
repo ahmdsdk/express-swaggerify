@@ -265,6 +265,21 @@ function extractResponseTypesFromMethod(
   const responseTypes = new Map<number, string>();
 
   try {
+    // Helper: detect response envelope types dynamically by shape (success: boolean, and data or error)
+    const isResponseEnvelopeType = (t: any): boolean => {
+      if (!t || typeof t.getProperties !== 'function') return false;
+      const props = t.getProperties();
+      const byName: Record<string, any> = {};
+      for (const p of props) {
+        byName[p.getName()] = p;
+      }
+      const successSym = byName['success'];
+      if (!successSym) return false;
+      const successType = checker.getTypeOfSymbolAtLocation(successSym, successSym.valueDeclaration || successSym.declarations?.[0] || sourceFile);
+      const successTypeStr = checker.typeToString(successType);
+      const hasDataOrError = Boolean(byName['data'] || byName['error']);
+      return hasDataOrError && successTypeStr === 'boolean';
+    };
     // Create a TypeScript program for the controller file
     const program = ts.createProgram([controllerFilePath], {
       target: ts.ScriptTarget.Latest,
@@ -645,23 +660,13 @@ function extractResponseTypesFromMethod(
                             }
                           });
                           
-                          if (dataPropertyNames.length > 0 && availableTypeNames && availableTypeNames.size > 0 && extractedType === 'ApiResponse') {
-                            // Try to match against available types
-                            for (const typeName of availableTypeNames) {
-                              if (typeName === 'ApiResponse' || typeName === 'ErrorResponse') {
-                                continue;
-                              }
-                              const typeNameLower = typeName.toLowerCase();
-                              for (const propName of dataPropertyNames) {
-                                const propNameCapitalized = propName.charAt(0).toUpperCase() + propName.slice(1);
-                                if (typeNameLower.includes(propName.toLowerCase()) ||
-                                    typeName.includes(propNameCapitalized)) {
-                                  extractedType = typeName;
-                                  break;
-                                }
-                              }
-                              if (extractedType !== 'ApiResponse') break;
-                            }
+                          // Do not attempt name-based matching of domain types here. Leave as ApiResponse.
+                          if (dataPropertyNames.length > 0 && extractedType === 'ApiResponse') {
+                            // keep generic ApiResponse when response variable is annotated as such
+                          }
+                          // Do not attempt name-based matching of domain types here. Leave as ApiResponse.
+                          if (dataPropertyNames.length > 0 && extractedType === 'ApiResponse') {
+                            // keep generic ApiResponse when response variable is annotated as such
                           }
                         }
                       }
@@ -684,7 +689,10 @@ function extractResponseTypesFromMethod(
                         // Additional check: make sure it's not an anonymous object type
                         const typeDecl = symbol.getDeclarations()?.[0];
                         if (typeDecl && (ts.isInterfaceDeclaration(typeDecl) || ts.isTypeAliasDeclaration(typeDecl))) {
-                          extractedType = symbolName;
+                          const declared = checker.getDeclaredTypeOfSymbol(symbol);
+                          if (declared && isResponseEnvelopeType(declared)) {
+                            extractedType = symbolName;
+                          }
                         }
                       }
                     }
@@ -699,7 +707,10 @@ function extractResponseTypesFromMethod(
                           // Verify it's actually a declared type
                           const symbol = type.getSymbol();
                           if (symbol && symbol.getName() === candidateType) {
-                            extractedType = candidateType;
+                            const declared = checker.getDeclaredTypeOfSymbol(symbol);
+                            if (declared && isResponseEnvelopeType(declared)) {
+                              extractedType = candidateType;
+                            }
                           }
                         }
                       }
@@ -723,27 +734,18 @@ function extractResponseTypesFromMethod(
                               if (symbolName && symbolName[0] === symbolName[0].toUpperCase() && !builtInTypes.includes(symbolName)) {
                                 const typeDecl = dataSymbol.getDeclarations()?.[0];
                                 if (typeDecl && (ts.isInterfaceDeclaration(typeDecl) || ts.isTypeAliasDeclaration(typeDecl))) {
-                                  // Check if this type exists in available types, if provided
-                                  if (!availableTypeNames || availableTypeNames.has(symbolName)) {
-                                    extractedType = symbolName;
+                                  // Only treat as response schema if the declared type has response envelope shape
+                                  const declared = checker.getDeclaredTypeOfSymbol(dataSymbol);
+                                  if (declared && isResponseEnvelopeType(declared)) {
+                                    if (!availableTypeNames || availableTypeNames.has(symbolName)) {
+                                      extractedType = symbolName;
+                                    }
                                   }
                                 }
                               }
                             }
                             
-                            // Fallback: try regex matching to any declared type
-                            if (!extractedType) {
-                              const dataTypeMatch = dataTypeString.match(/([A-Z][a-zA-Z0-9]+)/);
-                              if (dataTypeMatch) {
-                                const candidateType = dataTypeMatch[1];
-                                const builtInTypes = ['Object', 'Promise', 'Partial', 'Pick', 'Omit', 'Record'];
-                                if (!builtInTypes.includes(candidateType)) {
-                                  if (!availableTypeNames || availableTypeNames.has(candidateType)) {
-                                    extractedType = candidateType;
-                                  }
-                                }
-                              }
-                            }
+                            // Do not regex-match data types; avoid misclassifying domain models as response schemas
                           }
                         }
                       });
@@ -794,7 +796,7 @@ function inferFieldType(fieldName: string, lines: string[], startLine: number): 
   if (fieldName.toLowerCase().includes('age') || fieldName.toLowerCase().includes('count')) return 'number';
   if (fieldName.toLowerCase().includes('price') || fieldName.toLowerCase().includes('amount')) return 'number';
   if (fieldName.toLowerCase().includes('date') || fieldName.toLowerCase().includes('time')) return 'string (date)';
-  if (fieldName.toLowerCase().includes('is') || fieldName.toLowerCase().includes('has')) return 'boolean';
+  if (fieldName.toLowerCase().startsWith('is') || fieldName.toLowerCase().startsWith('has')) return 'boolean';
 
   // Check for specific usage patterns
   if (fieldUsage.includes(`parseInt(${fieldName})`) || fieldUsage.includes(`Number(${fieldName})`)) {
