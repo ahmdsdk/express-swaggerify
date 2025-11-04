@@ -587,7 +587,13 @@ function extractResponseTypesFromMethod(
               const statusArg = objectExpr.arguments[0];
               if (statusArg && ts.isNumericLiteral(statusArg)) {
                 const statusCode = parseInt(statusArg.text);
-                
+
+                // For error statuses, always treat as ErrorResponse and skip inference
+                if (statusCode >= 400) {
+                  responseTypes.set(statusCode, 'ErrorResponse');
+                  return;
+                }
+
                 // Get the argument passed to .json()
                 const jsonArg = node.arguments[0];
                 if (jsonArg) {
