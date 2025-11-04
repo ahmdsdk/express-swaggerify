@@ -660,13 +660,43 @@ function extractResponseTypesFromMethod(
                             }
                           });
                           
-                          // Do not attempt name-based matching of domain types here. Leave as ApiResponse.
+                          // Dynamic structural matching: pick best envelope candidate by data keys overlap
                           if (dataPropertyNames.length > 0 && extractedType === 'ApiResponse') {
-                            // keep generic ApiResponse when response variable is annotated as such
-                          }
-                          // Do not attempt name-based matching of domain types here. Leave as ApiResponse.
-                          if (dataPropertyNames.length > 0 && extractedType === 'ApiResponse') {
-                            // keep generic ApiResponse when response variable is annotated as such
+                            let bestName: string | undefined;
+                            let bestScore = 0;
+                            // Build envelope candidates from program source files
+                            const candidateMap = new Map<string, string[]>();
+                            for (const sf of program.getSourceFiles()) {
+                              ts.forEachChild(sf, (n) => {
+                                if (ts.isInterfaceDeclaration(n) || ts.isTypeAliasDeclaration(n)) {
+                                  if (!n.name) return;
+                                  const t = checker.getTypeAtLocation(n);
+                                  if (isResponseEnvelopeType(t)) {
+                                    const props = t.getProperties();
+                                    const byName: Record<string, any> = {} as any;
+                                    for (const p of props) byName[p.getName()] = p;
+                                    const dataSym = byName['data'];
+                                    const keys: string[] = [];
+                                    if (dataSym) {
+                                      const dt = checker.getTypeOfSymbolAtLocation(dataSym, dataSym.valueDeclaration || dataSym.declarations?.[0] || sf);
+                                      for (const dp of dt.getProperties()) keys.push(dp.getName());
+                                    }
+                                    candidateMap.set(n.name.getText(sf), keys);
+                                  }
+                                }
+                              });
+                            }
+                            for (const [name, keys] of candidateMap.entries()) {
+                              if (name === 'ApiResponse' || name === 'ErrorResponse') continue;
+                              const overlap = keys.filter(k => dataPropertyNames.includes(k)).length;
+                              if (overlap > bestScore) {
+                                bestScore = overlap;
+                                bestName = name;
+                              }
+                            }
+                            if (bestName && (!availableTypeNames || availableTypeNames.has(bestName))) {
+                              extractedType = bestName;
+                            }
                           }
                         }
                       }
@@ -750,8 +780,6 @@ function extractResponseTypesFromMethod(
                         }
                       });
                     }
-                    
-                    // Removed Strategy 4 heuristic matching to avoid hard-coded/type-name guessing
                   }
                   
                   if (extractedType) {
