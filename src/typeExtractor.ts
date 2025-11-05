@@ -200,7 +200,82 @@ function typeToJsonSchema(
     typeName = type.symbol?.getName();
   }
   
+  // Handle primitive types FIRST - before object types
+  // Reuse typeString already declared above
+  
+  // Check TypeScript type flags for more accurate detection
+  const flags = type.getFlags();
+  if (flags & ts.TypeFlags.Boolean) {
+    return { type: 'boolean' };
+  }
+  if (flags & ts.TypeFlags.String) {
+    return { type: 'string' };
+  }
+  if (flags & ts.TypeFlags.Number) {
+    return { type: 'number' };
+  }
+  
+  // Also check type string as fallback
+  if (typeString === 'string' || type.isStringLiteral()) {
+    return { type: 'string' };
+  }
+  if (typeString === 'number' || typeString === 'bigint') {
+    return { type: 'number' };
+  }
+  if (typeString === 'boolean') {
+    return { type: 'boolean' };
+  }
+  if (typeString === 'null') {
+    return { type: 'null' };
+  }
+  if (typeString.includes('Date')) {
+    return { type: 'string', format: 'date-time' };
+  }
+
+  // Handle array types BEFORE type references
+  if (type.symbol?.getName() === 'Array' || type.symbol?.getName() === 'ReadonlyArray' || typeString.includes('[]')) {
+    const elementType = (type as any).typeArguments?.[0];
+    if (elementType) {
+      return {
+        type: 'array',
+        items: typeToJsonSchema(elementType, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences),
+      };
+    }
+    // Fallback for syntactic sugar like 'string[]'
+    const matchArr = typeString.match(/^(.*)\[\]$/);
+    if (matchArr) {
+      const elemStr = matchArr[1].trim();
+      let itemsSchema: any = {};
+      if (elemStr === 'string') itemsSchema = { type: 'string' };
+      else if (elemStr === 'number' || elemStr === 'bigint') itemsSchema = { type: 'number' };
+      else if (elemStr === 'boolean') itemsSchema = { type: 'boolean' };
+      else if (typeDeclarations.has(elemStr)) {
+        const decl = typeDeclarations.get(elemStr)!;
+        const visitedNext = new Set<string>(visitedTypes);
+        visitedNext.add(elemStr);
+        itemsSchema = decl.isInterface
+          ? extractInterfaceSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext)
+          : extractTypeAliasSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext);
+      }
+      return { type: 'array', items: itemsSchema };
+    }
+    // Final fallback when element type cannot be resolved
+    return { type: 'array', items: { type: 'string' } };
+  }
+
+  // Fast-path for common array syntaxes where type arguments may be lost (keep for backwards compatibility)
+  if (/^Array<string>$/.test(typeString) || /^ReadonlyArray<string>$/.test(typeString) || /string\[\]$/.test(typeString)) {
+    return { type: 'array', items: { type: 'string' } };
+  }
+  if (/^Array<number>$/.test(typeString) || /^ReadonlyArray<number>$/.test(typeString) || /number\[\]$/.test(typeString) || /bigint\[\]$/.test(typeString)) {
+    return { type: 'array', items: { type: 'number' } };
+  }
+  if (/^Array<boolean>$/.test(typeString) || /^ReadonlyArray<boolean>$/.test(typeString) || /boolean\[\]$/.test(typeString)) {
+    return { type: 'array', items: { type: 'boolean' } };
+  }
+
   // Check if this is a declared type we should inline (only if checkForTypeReferences is true)
+  // This happens AFTER array checks to ensure arrays are detected correctly
   if (checkForTypeReferences && typeName && typeDeclarations.has(typeName)) {
     // Check if we've already extracted this schema - if so, inline it
     if (extractedSchemas[typeName]) {
@@ -227,48 +302,6 @@ function typeToJsonSchema(
       // Return a copy to avoid circular reference issues
       return JSON.parse(JSON.stringify(referencedSchema));
     }
-  }
-
-  // Handle primitive types FIRST - before object types
-  // Reuse typeString already declared above
-  
-  // Check TypeScript type flags for more accurate detection
-  const flags = type.getFlags();
-  if (flags & ts.TypeFlags.Boolean) {
-    return { type: 'boolean' };
-  }
-  if (flags & ts.TypeFlags.String) {
-    return { type: 'string' };
-  }
-  if (flags & ts.TypeFlags.Number) {
-    return { type: 'number' };
-  }
-  
-  // Also check type string as fallback
-  if (typeString === 'string' || type.isStringLiteral()) {
-    return { type: 'string' };
-  }
-  if (typeString === 'number' || typeString === 'bigint') {
-    return { type: 'number' };
-  }
-  if (typeString === 'boolean') {
-    return { type: 'boolean' };
-  }
-  // Fast-path for common array syntaxes where type arguments may be lost
-  if (/^Array<string>$/.test(typeString) || /^ReadonlyArray<string>$/.test(typeString) || /string\[\]$/.test(typeString)) {
-    return { type: 'array', items: { type: 'string' } };
-  }
-  if (/^Array<number>$/.test(typeString) || /^ReadonlyArray<number>$/.test(typeString) || /number\[\]$/.test(typeString) || /bigint\[\]$/.test(typeString)) {
-    return { type: 'array', items: { type: 'number' } };
-  }
-  if (/^Array<boolean>$/.test(typeString) || /^ReadonlyArray<boolean>$/.test(typeString) || /boolean\[\]$/.test(typeString)) {
-    return { type: 'array', items: { type: 'boolean' } };
-  }
-  if (typeString === 'null') {
-    return { type: 'null' };
-  }
-  if (typeString.includes('Date')) {
-    return { type: 'string', format: 'date-time' };
   }
 
   // Handle union types
@@ -319,38 +352,6 @@ function typeToJsonSchema(
     }
     // Fallback to first
     return typeToJsonSchema(unionTypes[0], checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
-  }
-
-  // Handle array types
-  if (type.symbol?.getName() === 'Array' || type.symbol?.getName() === 'ReadonlyArray' || checker.typeToString(type).includes('[]')) {
-    const elementType = (type as any).typeArguments?.[0];
-    if (elementType) {
-      return {
-        type: 'array',
-        items: typeToJsonSchema(elementType, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences),
-      };
-    }
-    // Fallback for syntactic sugar like 'string[]'
-    const tStr = checker.typeToString(type);
-    const matchArr = tStr.match(/^(.*)\[\]$/);
-    if (matchArr) {
-      const elemStr = matchArr[1].trim();
-      let itemsSchema: any = {};
-      if (elemStr === 'string') itemsSchema = { type: 'string' };
-      else if (elemStr === 'number' || elemStr === 'bigint') itemsSchema = { type: 'number' };
-      else if (elemStr === 'boolean') itemsSchema = { type: 'boolean' };
-      else if (typeDeclarations.has(elemStr)) {
-        const decl = typeDeclarations.get(elemStr)!;
-        const visitedNext = new Set<string>(visitedTypes);
-        visitedNext.add(elemStr);
-        itemsSchema = decl.isInterface
-          ? extractInterfaceSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext)
-          : extractTypeAliasSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext);
-      }
-      return { type: 'array', items: itemsSchema };
-    }
-    // Final fallback when element type cannot be resolved
-    return { type: 'array', items: { type: 'string' } };
   }
 
   // Handle object and type literal types (interfaces, classes, anonymous object literals)
@@ -421,36 +422,6 @@ function typeToJsonSchema(
       result.nullable = true;
       return result;
     }
-  }
-
-  // Handle array types (second guard for other branches)
-  if (type.symbol?.getName() === 'Array' || type.symbol?.getName() === 'ReadonlyArray' || checker.typeToString(type).includes('[]')) {
-    const elementType = (type as any).typeArguments?.[0];
-    if (elementType) {
-      return {
-        type: 'array',
-        items: typeToJsonSchema(elementType, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences),
-      };
-    }
-    const tStr = checker.typeToString(type);
-    const matchArr = tStr.match(/^(.*)\[\]$/);
-    if (matchArr) {
-      const elemStr = matchArr[1].trim();
-      let itemsSchema: any = {};
-      if (elemStr === 'string') itemsSchema = { type: 'string' };
-      else if (elemStr === 'number' || elemStr === 'bigint') itemsSchema = { type: 'number' };
-      else if (elemStr === 'boolean') itemsSchema = { type: 'boolean' };
-      else if (typeDeclarations.has(elemStr)) {
-        const decl = typeDeclarations.get(elemStr)!;
-        const visitedNext = new Set<string>(visitedTypes);
-        visitedNext.add(elemStr);
-        itemsSchema = decl.isInterface
-          ? extractInterfaceSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext)
-          : extractTypeAliasSchema(decl.node, checker, ts, extractedSchemas, typeDeclarations, visitedNext);
-      }
-      return { type: 'array', items: itemsSchema };
-    }
-    return { type: 'array', items: { type: 'string' } };
   }
 
   // Handle string literal types

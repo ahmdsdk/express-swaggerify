@@ -294,11 +294,34 @@ export async function generateSwaggerDocs(
       if (itemsSchema.$ref) {
         const name = resolveRef(itemsSchema.$ref) || itemsSchema.$ref;
         const target = name && extractedSchemas[name];
-        const itemEx = target ? generateExampleFromSchema(target, depth + 1) : 'string';
-        return [itemEx];
+        if (target) {
+          const itemEx = generateExampleFromSchema(target, depth + 1);
+          // If the resolved type has enum values, return multiple enum values
+          if (target.type === 'string' && target.enum && target.enum.length > 0) {
+            return target.enum.slice(0, 3);
+          }
+          if (target.type === 'number' && target.enum && target.enum.length > 0) {
+            return target.enum.slice(0, 3);
+          }
+          return [itemEx];
+        }
+        return ['string'];
       }
-      if (itemsSchema.type === 'string') return [itemsSchema.example ?? 'string'];
-      if (itemsSchema.type === 'number' || itemsSchema.type === 'integer') return [itemsSchema.example ?? 0];
+      if (itemsSchema.type === 'string') {
+        // Check for enum values first
+        if (itemsSchema.enum && itemsSchema.enum.length > 0) {
+          // Return array with multiple enum values to show it's an array
+          return itemsSchema.enum.slice(0, 3); // Show up to 3 enum values
+        }
+        return [itemsSchema.example ?? 'string'];
+      }
+      if (itemsSchema.type === 'number' || itemsSchema.type === 'integer') {
+        // Check for enum values
+        if (itemsSchema.enum && itemsSchema.enum.length > 0) {
+          return itemsSchema.enum.slice(0, 3);
+        }
+        return [itemsSchema.example ?? 0];
+      }
       if (itemsSchema.type === 'boolean') return [itemsSchema.example ?? true];
       if (itemsSchema.type === 'object' && itemsSchema.properties) {
         return [generateExampleFromSchema(itemsSchema, depth + 1)];
@@ -321,6 +344,22 @@ export async function generateSwaggerDocs(
   for (const p of Object.keys(paths)) {
     for (const m of Object.keys(paths[p])) {
       const op = paths[p][m];
+      
+      // Generate examples for request bodies
+      if (op.requestBody?.content?.['application/json']?.schema) {
+        const reqContent = op.requestBody.content['application/json'];
+        const reqSchema = reqContent.schema;
+        const refName = resolveRef(reqSchema.$ref);
+        if (refName && extractedSchemas[refName]) {
+          // Build example from the referenced schema
+          reqContent.example = generateExampleFromSchema(extractedSchemas[refName]);
+        } else if (reqSchema && !reqSchema.$ref) {
+          // Direct schema object (not a $ref)
+          reqContent.example = generateExampleFromSchema(reqSchema);
+        }
+      }
+      
+      // Generate examples for responses
       if (!op.responses) continue;
       for (const sc of Object.keys(op.responses)) {
         const resp = op.responses[sc];
@@ -333,6 +372,9 @@ export async function generateSwaggerDocs(
           const example = generateExampleFromSchema(extractedSchemas[refName]);
           // Attach
           content.example = example;
+        } else if (schema && !schema.$ref) {
+          // Direct schema object (not a $ref)
+          content.example = generateExampleFromSchema(schema);
         }
       }
     }
