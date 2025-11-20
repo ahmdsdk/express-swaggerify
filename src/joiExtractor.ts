@@ -153,9 +153,30 @@ function cleanJsonSchema(schema: any): any {
 
   const cleaned: any = {};
 
-  // Copy standard OpenAPI properties
+  // Handle nullable types: convert type: ['string', 'null'] to type: 'string', nullable: true
   if (schema.type !== undefined) {
-    cleaned.type = schema.type;
+    if (Array.isArray(schema.type)) {
+      // Check if array contains 'null'
+      const hasNull = schema.type.includes('null');
+      const nonNullTypes = schema.type.filter((t: any) => t !== 'null');
+
+      if (hasNull && nonNullTypes.length === 1) {
+        // Convert ['string', 'null'] to type: 'string', nullable: true
+        cleaned.type = nonNullTypes[0];
+        cleaned.nullable = true;
+      } else if (hasNull && nonNullTypes.length > 1) {
+        // Multiple non-null types with null: keep as oneOf
+        cleaned.oneOf = [
+          ...nonNullTypes.map((t: any) => ({ type: t })),
+          { type: 'null' }
+        ];
+      } else {
+        // No null, just use the types as-is
+        cleaned.type = schema.type;
+      }
+    } else {
+      cleaned.type = schema.type;
+    }
   }
 
   if (schema.properties !== undefined) {
@@ -180,10 +201,23 @@ function cleanJsonSchema(schema: any): any {
   if (schema.maxLength !== undefined) cleaned.maxLength = schema.maxLength;
   if (schema.minimum !== undefined) cleaned.minimum = schema.minimum;
   if (schema.maximum !== undefined) cleaned.maximum = schema.maximum;
-  if (schema.enum !== undefined) cleaned.enum = schema.enum;
+
+  // Handle enum: remove null from enum array and set nullable instead
+  if (schema.enum !== undefined) {
+    if (Array.isArray(schema.enum) && schema.enum.includes(null)) {
+      cleaned.enum = schema.enum.filter((v: any) => v !== null);
+      cleaned.nullable = true;
+    } else {
+      cleaned.enum = schema.enum;
+    }
+  }
+
   if (schema.default !== undefined) cleaned.default = schema.default;
   if (schema.description !== undefined) cleaned.description = schema.description;
   if (schema.example !== undefined) cleaned.example = schema.example;
+
+  // Preserve nullable if explicitly set
+  if (schema.nullable !== undefined) cleaned.nullable = schema.nullable;
 
   // Handle oneOf/anyOf/allOf
   if (schema.oneOf !== undefined) {
