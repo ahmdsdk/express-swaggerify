@@ -29,7 +29,7 @@ export async function loadTypesFromDirectory(
     const ts = tsModule;
 
     const schemasPath = path.join(process.cwd(), schemasDir);
-    
+
     if (!await fs.pathExists(schemasPath)) {
       console.log(`  ⚠️  Schemas directory not found: ${schemasDir}`);
       return schemas;
@@ -37,7 +37,7 @@ export async function loadTypesFromDirectory(
 
     // Find all TypeScript files in the schemas directory
     const typeFiles = await glob(`${schemasDir}/**/*.ts`, { cwd: process.cwd() });
-    
+
     if (typeFiles.length === 0) {
       console.log(`  ⚠️  No TypeScript files found in ${schemasDir}`);
       return schemas;
@@ -58,7 +58,7 @@ export async function loadTypesFromDirectory(
 
     // First pass: Collect all type declarations (interfaces and type aliases)
     const typeDeclarations = new Map<string, { node: any; isInterface: boolean }>();
-    
+
     for (const sourceFile of program.getSourceFiles()) {
       // Only process files from our schemas directory
       if (!filePaths.includes(sourceFile.fileName)) {
@@ -97,7 +97,7 @@ export async function loadTypesFromDirectory(
             console.log(`    ✅ Extracted interface: ${node.name.text}`);
           }
         }
-        
+
         // Extract type aliases (type declarations)
         if (ts.isTypeAliasDeclaration(node)) {
           // Create a visited set with this type already in it to prevent self-reference issues
@@ -179,12 +179,12 @@ function typeToJsonSchema(
   // This needs to happen before other type checks
   // Try multiple ways to get the type name
   let typeName: string | undefined;
-  
+
   // Method 1: Get from symbol
   if (type.symbol) {
     typeName = type.symbol.getName();
   }
-  
+
   // Method 2: Get from type string (e.g., "User" from "User")
   const typeString = checker.typeToString(type);
   if (!typeName || !typeDeclarations.has(typeName)) {
@@ -194,15 +194,15 @@ function typeToJsonSchema(
       typeName = match[1];
     }
   }
-  
+
   // Method 3: Check if it's an interface/class type
   if (!typeName && type.isClassOrInterface()) {
     typeName = type.symbol?.getName();
   }
-  
+
   // Handle primitive types FIRST - before object types
   // Reuse typeString already declared above
-  
+
   // Check TypeScript type flags for more accurate detection
   const flags = type.getFlags();
   if (flags & ts.TypeFlags.Boolean) {
@@ -214,7 +214,7 @@ function typeToJsonSchema(
   if (flags & ts.TypeFlags.Number) {
     return { type: 'number' };
   }
-  
+
   // Also check type string as fallback
   if (typeString === 'string' || type.isStringLiteral()) {
     return { type: 'string' };
@@ -232,8 +232,12 @@ function typeToJsonSchema(
     return { type: 'string', format: 'date-time' };
   }
 
-  // Handle array types BEFORE type references
-  if (type.symbol?.getName() === 'Array' || type.symbol?.getName() === 'ReadonlyArray' || typeString.includes('[]')) {
+  // Handle array types BEFORE type references (but skip union wrapper types)
+  if (
+    !type.isUnion() &&
+    (type.symbol?.getName() === 'Array' ||
+      type.symbol?.getName() === 'ReadonlyArray')
+  ) {
     const elementType = (type as any).typeArguments?.[0];
     if (elementType) {
       return {
@@ -264,13 +268,29 @@ function typeToJsonSchema(
   }
 
   // Fast-path for common array syntaxes where type arguments may be lost (keep for backwards compatibility)
-  if (/^Array<string>$/.test(typeString) || /^ReadonlyArray<string>$/.test(typeString) || /string\[\]$/.test(typeString)) {
+  if (
+    !type.isUnion() &&
+    (/^Array<string>$/.test(typeString) ||
+      /^ReadonlyArray<string>$/.test(typeString) ||
+      /string\[\]$/.test(typeString))
+  ) {
     return { type: 'array', items: { type: 'string' } };
   }
-  if (/^Array<number>$/.test(typeString) || /^ReadonlyArray<number>$/.test(typeString) || /number\[\]$/.test(typeString) || /bigint\[\]$/.test(typeString)) {
+  if (
+    !type.isUnion() &&
+    (/^Array<number>$/.test(typeString) ||
+      /^ReadonlyArray<number>$/.test(typeString) ||
+      /number\[\]$/.test(typeString) ||
+      /bigint\[\]$/.test(typeString))
+  ) {
     return { type: 'array', items: { type: 'number' } };
   }
-  if (/^Array<boolean>$/.test(typeString) || /^ReadonlyArray<boolean>$/.test(typeString) || /boolean\[\]$/.test(typeString)) {
+  if (
+    !type.isUnion() &&
+    (/^Array<boolean>$/.test(typeString) ||
+      /^ReadonlyArray<boolean>$/.test(typeString) ||
+      /boolean\[\]$/.test(typeString))
+  ) {
     return { type: 'array', items: { type: 'boolean' } };
   }
 
@@ -282,20 +302,20 @@ function typeToJsonSchema(
       // Return the extracted schema (inline it)
       return JSON.parse(JSON.stringify(extractedSchemas[typeName]));
     }
-    
+
     // Check for circular reference
     if (visitedTypes.has(typeName)) {
       // Circular reference detected - return a reference instead
       return { $ref: `#/components/schemas/${typeName}` };
     }
-    
+
     // If not yet extracted, extract it now (but prevent infinite recursion)
     visitedTypes.add(typeName);
     const { node, isInterface } = typeDeclarations.get(typeName)!;
     const referencedSchema = isInterface
       ? extractInterfaceSchema(node, checker, ts, extractedSchemas, typeDeclarations, visitedTypes)
       : extractTypeAliasSchema(node, checker, ts, extractedSchemas, typeDeclarations, visitedTypes);
-    
+
     if (referencedSchema) {
       // Store it for future reference
       extractedSchemas[typeName] = referencedSchema;
@@ -327,15 +347,6 @@ function typeToJsonSchema(
       const f = t.getFlags();
       return !(f & ts.TypeFlags.Null) && !(f & ts.TypeFlags.Undefined) && !(f & ts.TypeFlags.Any);
     });
-    // If any of the union members is an array, use that array member
-    const arrayMember = nonNullish.find((t: any) => {
-      const name = t.symbol?.getName?.();
-      const tsStr = checker.typeToString(t);
-      return name === 'Array' || name === 'ReadonlyArray' || /\[\]$/.test(tsStr);
-    });
-    if (arrayMember) {
-      return typeToJsonSchema(arrayMember, checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
-    }
     // If exactly one meaningful member remains, use it (mark nullable if needed)
     const meaningful = nonNullish.length === 0 ? unionTypes : nonNullish;
     if (meaningful.length === 1) {
@@ -350,8 +361,32 @@ function typeToJsonSchema(
       }
       return result;
     }
-    // Fallback to first
-    return typeToJsonSchema(unionTypes[0], checker, ts, extractedSchemas, typeDeclarations, visitedTypes, checkForTypeReferences);
+    // Prefer an object-like member if present
+    const objectMember = meaningful.find((t: any) => {
+      const f = t.getFlags();
+      return f & ts.TypeFlags.Object;
+    });
+    if (objectMember) {
+      return typeToJsonSchema(
+        objectMember,
+        checker,
+        ts,
+        extractedSchemas,
+        typeDeclarations,
+        visitedTypes,
+        checkForTypeReferences
+      );
+    }
+    // Fallback to first meaningful member
+    return typeToJsonSchema(
+      meaningful[0],
+      checker,
+      ts,
+      extractedSchemas,
+      typeDeclarations,
+      visitedTypes,
+      checkForTypeReferences
+    );
   }
 
   // Handle object and type literal types (interfaces, classes, anonymous object literals)
@@ -382,11 +417,11 @@ function typeToJsonSchema(
         return;
       }
       const propType = checker.getTypeOfSymbolAtLocation(prop, prop.valueDeclaration!);
-      
+
       // Create a new visited set for this property to allow referencing types
       const propVisitedTypes = new Set(visitedTypes);
       const propSchema = typeToJsonSchema(propType, checker, ts, extractedSchemas, typeDeclarations, propVisitedTypes, true);
-      
+
       // Check if property is optional
       const isOptional = prop.getFlags() & ts.SymbolFlags.Optional;
       if (!isOptional && prop.valueDeclaration) {
